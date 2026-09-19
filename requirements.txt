@@ -1,0 +1,9 @@
+# Latest stable Django, as required by the brief.
+Django==6.1.1
+djangorestframework==3.18.1
+drf-spectacular==0.30.0
+requests==2.34.2
+
+# Serving
+gunicorn==26.2.0
+whitenoise==6.12.0

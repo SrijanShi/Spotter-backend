@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+db.sqlite3
+staticfiles/
+.env
+.DS_Store
+.idea/
+.vscode/
+*.log
+
+# Downloaded on demand by `manage.py geocode_stations` (5 MB); the geocoded
+# output in data/station_coordinates.csv is committed instead.
+data/census_gazetteer_places.txt
