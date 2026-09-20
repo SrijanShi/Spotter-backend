@@ -1,0 +1,128 @@
+{
+  "info": {
+    "name": "Fuel-Optimal Route API",
+    "description": "Plans a US route and the cheapest way to fuel it (500 mile range, 10 mpg).\n\nImport, then run the requests top to bottom - request 2 shows the cache serving the same plan with zero external API calls.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [{ "key": "base_url", "value": "http://localhost:8000" }],
+  "item": [
+    {
+      "name": "1. Dallas -> New York (place names)",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/api/v1/route/?start=Dallas, TX&finish=New York, NY",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "route", ""],
+          "query": [
+            { "key": "start", "value": "Dallas, TX" },
+            { "key": "finish", "value": "New York, NY" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "2. Same route again (served from cache)",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/api/v1/route/?start=Dallas, TX&finish=New York, NY",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "route", ""],
+          "query": [
+            { "key": "start", "value": "Dallas, TX" },
+            { "key": "finish", "value": "New York, NY" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "3. Coordinates in, zero geocoding calls",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/api/v1/route/?start=32.7767,-96.7970&finish=39.7392,-104.9903",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "route", ""],
+          "query": [
+            { "key": "start", "value": "32.7767,-96.7970" },
+            { "key": "finish", "value": "39.7392,-104.9903" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "4. POST with custom vehicle",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"Chicago, IL\",\n  \"finish\": \"Denver, CO\",\n  \"mpg\": 6.5,\n  \"range_miles\": 400,\n  \"max_detour_miles\": 20\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/route/",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "route", ""]
+        }
+      }
+    },
+    {
+      "name": "5. Short hop (Austin -> Houston)",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/api/v1/route/?start=Austin, TX&finish=Houston, TX&include_geometry=false",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "route", ""],
+          "query": [
+            { "key": "start", "value": "Austin, TX" },
+            { "key": "finish", "value": "Houston, TX" },
+            { "key": "include_geometry", "value": "false" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "6. Error: location outside the USA (400)",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/api/v1/route/?start=Toronto, ON&finish=Dallas, TX",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "route", ""],
+          "query": [
+            { "key": "start", "value": "Toronto, ON" },
+            { "key": "finish", "value": "Dallas, TX" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "7. Error: no station can bridge the range (422)",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/api/v1/route/?start=Los Angeles, CA&finish=Seattle, WA",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "route", ""],
+          "query": [
+            { "key": "start", "value": "Los Angeles, CA" },
+            { "key": "finish", "value": "Seattle, WA" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "8. Health / dataset summary",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/api/v1/health/",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "health", ""]
+        }
+      }
+    }
+  ]
+}

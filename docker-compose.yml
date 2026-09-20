@@ -1,0 +1,23 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # Optional - without it the keyless public OSRM server is used.
+      ORS_API_KEY: "${ORS_API_KEY:-}"
+      DJANGO_DEBUG: "false"
+      DJANGO_SECRET_KEY: "${DJANGO_SECRET_KEY:-change-me-before-any-real-deployment}"
+      DJANGO_ALLOWED_HOSTS: "*"
+      DJANGO_DB_PATH: /data/db.sqlite3
+    volumes:
+      - sqlite-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/v1/health/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  sqlite-data:

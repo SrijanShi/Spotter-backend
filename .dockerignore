@@ -1,0 +1,10 @@
+.venv/
+venv/
+.git/
+.github/
+db.sqlite3
+staticfiles/
+__pycache__/
+*.pyc
+.env
+data/census_gazetteer_places.txt
