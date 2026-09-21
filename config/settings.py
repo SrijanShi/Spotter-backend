@@ -127,6 +127,10 @@ CACHES = {
 }
 
 REST_FRAMEWORK = {
+    # The API is public and stateless: no login, no session, so the OpenAPI docs
+    # do not advertise an "Authorize" step that does not exist.
+    "DEFAULT_AUTHENTICATION_CLASSES": [],
+    "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
@@ -138,8 +142,8 @@ REST_FRAMEWORK = {
 SPECTACULAR_SETTINGS = {
     "TITLE": "Fuel-Optimal Route API",
     "DESCRIPTION": (
-        "Plans a driving route between two US locations and returns the cost-optimal "
-        "sequence of fuel stops for a 500-mile-range, 10 mpg vehicle."
+        "Plans a driving route between two US locations and returns cost-effective fuel "
+        "stops for a 500-mile-range, 10 mpg vehicle, with the total fuel cost and a map."
     ),
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
