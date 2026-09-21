@@ -8,3 +8,4 @@ __pycache__/
 *.pyc
 .env
 data/census_gazetteer_places.txt
+.cache/

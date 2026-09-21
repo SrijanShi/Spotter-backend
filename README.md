@@ -273,9 +273,9 @@ data/
 - City-centroid coordinates mean `detour_miles` is an estimate of how far off the highway a stop
   is, not a measured driving detour. Detours are not added to the trip distance.
 - Prices are a static snapshot; there is no refresh job.
-- SQLite and a local-memory cache are fine for a single process. For several gunicorn workers a
-  shared cache (Redis) would stop each worker planning the same route separately; the station index
-  is intentionally per-process and read-only.
+- Planned routes are cached on disk, so every gunicorn worker shares them. That is right for one
+  machine; across several, point Django's cache at Redis instead. The station index is
+  intentionally per-process and read-only.
 
 ## Data sources
 

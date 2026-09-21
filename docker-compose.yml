@@ -10,6 +10,9 @@ services:
       DJANGO_SECRET_KEY: "${DJANGO_SECRET_KEY:-change-me-before-any-real-deployment}"
       DJANGO_ALLOWED_HOSTS: "*"
       DJANGO_DB_PATH: /data/db.sqlite3
+      # Shared by every gunicorn worker, so a repeat request is a cache hit
+      # whichever worker serves it.
+      DJANGO_CACHE_DIR: /data/cache
     volumes:
       - sqlite-data:/data
     healthcheck:

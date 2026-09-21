@@ -13,3 +13,4 @@ staticfiles/
 # Downloaded on demand by `manage.py geocode_stations` (5 MB); the geocoded
 # output in data/station_coordinates.csv is committed instead.
 data/census_gazetteer_places.txt
+.cache/

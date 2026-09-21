@@ -107,13 +107,23 @@ STORAGES = {
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+# Planned routes are cached on disk rather than in process memory: gunicorn runs
+# several worker processes, and a per-process cache would make a repeat request
+# miss whenever it lands on a different worker. Tests keep the in-memory cache.
 CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-        "LOCATION": "route-planner",
-        "TIMEOUT": 60 * 60 * 24,
-        "OPTIONS": {"MAX_ENTRIES": 2000},
-    }
+    "default": (
+        {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "route-planner-tests",
+        }
+        if TESTING
+        else {
+            "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
+            "LOCATION": os.environ.get("DJANGO_CACHE_DIR", str(BASE_DIR / ".cache")),
+            "TIMEOUT": 60 * 60 * 24,
+            "OPTIONS": {"MAX_ENTRIES": 500},
+        }
+    )
 }
 
 REST_FRAMEWORK = {
