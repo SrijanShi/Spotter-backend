@@ -95,6 +95,7 @@
   <div class="row">
     <div style="flex:1"><label for="mpg">MPG</label><input id="mpg" value="{{ mpg }}"></div>
     <div style="flex:1"><label for="range">Range (mi)</label><input id="range" value="{{ range_miles }}"></div>
+    <div style="flex:1"><label for="penalty">$ per stop</label><input id="penalty" value="{{ stop_penalty }}"></div>
   </div>
   <button id="go">Plan route</button>
 
@@ -113,8 +114,9 @@
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script>
 const map = L.map('map', { zoomControl: true }).setView([39.5, -98.35], 4);
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-  attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+// OpenStreetMap's standard tiles: free, no API key, attribution required.
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
   maxZoom: 19
 }).addTo(map);
 
@@ -131,7 +133,7 @@ function render(data) {
   layer.clearLayers();
 
   const line = data.route.geometry.coordinates.map(c => [c[1], c[0]]);
-  const path = L.polyline(line, { color: '#58a6ff', weight: 4, opacity: .9 }).addTo(layer);
+  const path = L.polyline(line, { color: '#1f6feb', weight: 5, opacity: .85 }).addTo(layer);
 
   L.marker([data.start.latitude, data.start.longitude], { icon: pin('A') })
     .bindPopup(`<b>Start</b><br>${data.start.query}`).addTo(layer);
@@ -161,6 +163,7 @@ function render(data) {
       <div class="card"><div class="k">Avg price paid</div><div class="v">$${t.average_price_paid.toFixed(3)}</div></div>
       <div class="card"><div class="k">Saved vs avg price</div><div class="v green">${money(t.savings_vs_national_average)}</div></div>
     </div>
+    ${tradeoff(data)}
     <div class="foot" style="margin-top:2px">
       ${data.route.duration_hours.toFixed(1)} h driving &middot; ${data.meta.stations_considered}
       stations within ${data.meta.max_detour_miles} mi of the route &middot;
@@ -179,6 +182,17 @@ function render(data) {
     </div>`).join('') : '<div class="meta">No fuel stops needed.</div>');
 }
 
+function tradeoff(data) {
+  const o = data.optimization || {};
+  const cheapest = o.cheapest_fuel_only_plan;
+  if (!cheapest || cheapest.stops <= data.totals.stops) return '';
+  return `<div class="foot" style="margin:0 0 6px">
+    Cheapest fuel regardless of stops: ${money(cheapest.fuel_cost)} over ${cheapest.stops} stops.
+    This plan spends ${money(o.extra_fuel_cost_for_fewer_stops)} more to make
+    ${cheapest.stops - data.totals.stops} fewer (each stop priced at ${money(o.stop_penalty)} plus its detour).
+  </div>`;
+}
+
 function message(html, kind) {
   $('messages').innerHTML = html ? `<div class="msg ${kind}">${html}</div>` : '';
 }
@@ -190,7 +204,13 @@ async function plan() {
   message('');
   const params = new URLSearchParams({
     start: $('start').value, finish: $('finish').value,
-    mpg: $('mpg').value, range_miles: $('range').value
+    mpg: $('mpg').value, range_miles: $('range').value, stop_penalty: $('penalty').value
+  });
+  // Carry over the other plan parameters from map_url, so this page draws the
+  // exact plan the API returned.
+  const current = new URLSearchParams(window.location.search);
+  ['max_detour_miles', 'start_fuel_gallons'].forEach(key => {
+    if (current.has(key)) params.set(key, current.get(key));
   });
   try {
     const response = await fetch(`/api/v1/route/?${params}`, { headers: { Accept: 'application/json' } });

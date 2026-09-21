@@ -12,11 +12,14 @@ from ..models import FuelStation
 from ..services.corridor import get_station_index
 from ..services.geocoding import GeocodingError, OutsideUnitedStatesError
 from ..services.optimizer import InfeasibleRouteError
-from ..services.planner import plan_route
-from ..services.routing import RoutingError
+from ..services.planner import SameLocationError, plan_route
+from ..services.routing import NoRouteError, RoutingError
 from .serializers import RoutePlanSerializer, RouteRequestSerializer
 
 logger = logging.getLogger(__name__)
+
+# Optional request parameters that change the plan (and so belong in map_url).
+PLAN_PARAMETERS = ("mpg", "range_miles", "max_detour_miles", "start_fuel_gallons", "stop_penalty")
 
 
 class RoutePlanView(APIView):
@@ -35,6 +38,12 @@ class RoutePlanView(APIView):
                 "max_detour_miles", float, description="Corridor half-width, default 15"
             ),
             OpenApiParameter("start_fuel_gallons", float, description="Fuel on board, default 0"),
+            OpenApiParameter(
+                "stop_penalty",
+                float,
+                description="Dollars charged per fuel stop when choosing stops, default 5. "
+                "0 ignores driver time; detour fuel still counts.",
+            ),
             OpenApiParameter("include_geometry", bool, description="Return the polyline"),
             OpenApiParameter("refresh", bool, description="Bypass the cache"),
         ],
@@ -80,6 +89,20 @@ class RoutePlanView(APIView):
                 {"error": "location_not_found", "detail": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        except SameLocationError as exc:
+            return Response(
+                {"error": "same_location", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except NoRouteError as exc:
+            return Response(
+                {
+                    "error": "no_drivable_route",
+                    "detail": "There is no road route between these two locations.",
+                    "provider_detail": str(exc),
+                },
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
         except InfeasibleRouteError as exc:
             return Response(
                 {"error": "route_not_fuelable", "detail": str(exc), **exc.detail},
@@ -98,10 +121,14 @@ class RoutePlanView(APIView):
         return Response({"map_url": self._map_url(serializer.validated_data), **payload})
 
     def _map_url(self, data) -> str:
-        """Link to this exact plan drawn on a map - the "map of the route"."""
+        """Link to this exact plan drawn on a map - the "map of the route".
+
+        Every parameter that changes the plan is carried over, so the map shows
+        the same stops as the JSON it came with.
+        """
         params = {"start": data["start"], "finish": data["finish"]}
-        for key in ("mpg", "range_miles"):
-            if data.get(key):
+        for key in PLAN_PARAMETERS:
+            if data.get(key) is not None:
                 params[key] = data[key]
         return self.request.build_absolute_uri(f"{reverse('map')}?{urlencode(params)}")
 

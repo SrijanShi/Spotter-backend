@@ -8,7 +8,9 @@ using the supplied OPIS truck stop price file.
 
 Give it a start and a finish; it returns the route, a link to a map of it, the fuel stops to make
 in order, how many gallons to buy at each, and what the trip costs in fuel — using **one** call to
-the external routing API.
+the external routing API. Stops are chosen for cost *and* practicality: Dallas → New York is 4
+stops (the minimum a 500-mile tank allows), not 8 stops that save $4 by topping up 1-gallon at a
+time.
 
 ```
 GET /api/v1/route/?start=Dallas, TX&finish=New York, NY
@@ -21,18 +23,27 @@ GET /api/v1/route/?start=Dallas, TX&finish=New York, NY
               "geometry": { "type": "LineString", "coordinates": [[-96.77, 32.79], …] } },
   "fuel_stops": [
     { "sequence": 1, "name": "One9 #1248", "city": "Wilmer", "state": "TX",
-      "price_per_gallon": 2.756, "mile_marker": 0.0, "gallons": 50.44, "cost": 139.0 },
+      "price_per_gallon": 2.756, "mile_marker": 0.0, "gallons": 50.0, "cost": 137.78 },
+    { "sequence": 2, "name": "PIT STOP", "city": "Wheatley", "state": "AR",
+      "price_per_gallon": 2.999, "mile_marker": 385.6, "gallons": 18.7, "cost": 56.08 },
     …
   ],
-  "totals": { "stops": 8, "gallons": 155.18, "fuel_cost": 439.06,
-              "cost_at_national_average": 529.62, "savings_vs_national_average": 90.57 },
-  "meta":   { "external_api_calls": 1, "cached": false, "compute_ms": 1497.3,
-              "routing_api_ms": 1364.9, "stations_considered": 388 }
+  "totals": { "stops": 4, "gallons": 155.2, "fuel_cost": 443.29,
+              "cost_at_national_average": 529.7, "savings_vs_national_average": 86.41 },
+  "optimization": {
+    "objective": "fuel cost + $5.00 per stop + the fuel to drive off the route to each station and back",
+    "cheapest_fuel_only_plan": { "stops": 8, "fuel_cost": 439.12 },
+    "extra_fuel_cost_for_fewer_stops": 4.17
+  },
+  "meta":   { "external_api_calls": 1, "cached": false, "compute_ms": 1590.3,
+              "routing_api_ms": 1443.7, "stations_considered": 385 }
 }
 ```
 
+`totals` is the exact sum of the stops as listed, to the cent.
+
 **The map.** Every response carries `map_url` — open it and the route is drawn with numbered fuel
-stops, prices and totals (Leaflet + OpenStreetMap, rendered from this same response). The route is
+stops, prices and totals (Leaflet on OpenStreetMap tiles, rendered from this same response). The route is
 also in the JSON as a GeoJSON `LineString`, and every stop has coordinates, for clients that draw
 their own.
 
@@ -91,7 +102,7 @@ Other entry points: `/api/docs/` (Swagger UI), `/api/v1/health/` (dataset summar
  └─────────────────┘                 each with its mile marker along the route
         │
         ▼
- ┌─────────────────┐   0 calls     the gas station problem, solved exactly
+ ┌─────────────────┐   0 calls     dynamic program: fuel cost + a cost per stop
  │   optimiser     │───────────────► where to stop, how much to buy, what it costs
  └─────────────────┘
 ```
@@ -110,9 +121,12 @@ The brief asks for one call to the free map/routing API, and no more than three.
 **A normal request makes exactly one external call** — the route. `City, ST` inputs are answered
 from the same US Census gazetteer that geocodes the truck stops, shipped as a 440 KB file. Only
 input it cannot parse (a street address, a landmark) goes to an online geocoder, and that answer is
-cached in the database permanently, so the worst case is 3 and only ever on first sight. A repeat
-request makes **zero** calls: planned routes are cached for 24 hours. The response reports the
-actual count in `meta.external_api_calls`, so you can check rather than take my word for it.
+cached in the database permanently, so a request makes at most 3 calls, and only on first sight of
+such a name. A repeat request makes **zero** calls: planned routes are cached for 24 hours.
+
+`meta.external_api_calls` counts every HTTP request actually sent, including the rare retry (one,
+on a network error or 5xx — never on a 4xx) or fallback to the second router, so you can check the
+budget rather than take my word for it.
 
 ### Finding the stations near the route
 
@@ -124,25 +138,44 @@ route that is 388 candidate stations found in **63 ms**.
 
 ### The optimiser — [`services/optimizer.py`](routeplanner/services/optimizer.py)
 
-This is the classic *gas station problem*: a uniform tank, fuel bought by the fraction of a gallon,
-prices varying by stop. The greedy rule is provably optimal for that model:
+The brief says optimal *mostly* means cost effective. Taken literally — cheapest fuel, nothing else
+— the answer is impractical: prices vary by a few cents between neighbouring truck stops, so the
+pure optimum pulls a truck off the interstate to buy 1.2 gallons that are 3¢ cheaper. Miami →
+Seattle takes 27 stops that way. No dispatcher would send that plan.
 
-> At the stop you are standing at, look ahead as far as the tank can carry you.
-> * If a **cheaper** station is in reach, buy exactly enough fuel to get to the **first** cheaper
->   one — never pay today's higher price for fuel you can buy cheaper down the road.
-> * Otherwise this is the cheapest fuel you will see for a full tank, so **fill up** and drive to
->   the cheapest station in reach.
->
-> Near the destination, never buy more than the fuel needed to finish.
+So the plan minimises
+
+> **fuel cost + $5 per stop + the fuel to drive off the route to that station and back**
+
+$5 stands for the driver's time at a stop (roughly ten minutes); it is the `stop_penalty` query
+parameter; `stop_penalty=0` drops the time cost and leaves only fuel, detour fuel included. The detour term means a station
+14 miles off the interstate has to be genuinely cheaper to be worth the 28-mile round trip.
+
+| Route | Cheapest fuel only | This plan | Extra fuel cost |
+|---|---|---|---|
+| Dallas → New York | 8 stops, $439.12 | **4 stops**, $443.29 | +$4.17 (0.9%) |
+| Miami → Seattle | 27 stops, $1,005.33 | **9 stops**, $1,015.05 | +$9.72 (1.0%) |
+| Chicago → Denver | 7 stops, $291.63 | **3 stops**, $292.89 | +$1.26 (0.4%) |
+| Los Angeles → Dallas | 7 stops, $441.83 | **5 stops**, $442.09 | +$0.26 (0.1%) |
+
+Every response reports both numbers under `optimization`, so the trade-off is visible, not hidden.
+
+**How.** A dynamic program over (station, fuel in the tank). Walking the stations in order along
+the route, it keeps, for every possible fuel level, the cheapest way to arrive there. At each
+station the truck either drives past or stops and fills to any level; because the fill step is a
+prefix minimum, each station costs O(tank) with numpy, and a cross-country route with ~500
+candidate stations solves in **2–16 ms**. Fuel is tracked in whole miles of range (0.1 gallon at
+10 mpg) — the only approximation, and the plan is exactly optimal at that resolution.
 
 Two hard constraints are checked before any of that runs: no gap between consecutive usable
 stations may exceed the range, and neither may the final run to the destination. If one does, the
 API returns **422** naming the gap rather than quietly returning a plan that strands the driver.
 
-A proof in a docstring is worth little on its own, so
-[`test_optimizer_optimality.py`](routeplanner/tests/test_optimizer_optimality.py) checks the greedy
-against a dynamic program that enumerates *every* whole-gallon purchase on 40 random instances.
-They agree exactly.
+A claim of optimality is worth little on its own, so
+[`test_optimizer_optimality.py`](routeplanner/tests/test_optimizer_optimality.py) checks the
+planner against an exhaustive search over *every* whole-gallon purchase and every choice of stops,
+on 120 random instances — with no stop cost, a $5 stop cost, $5 plus detours, and $40 plus
+detours. They agree exactly.
 
 ---
 
@@ -154,7 +187,8 @@ query parameters.
 **Fuel cost model — the tank starts empty, so every mile is paid for.**
 A truck cannot set off on an empty tank, so mile 0 is treated as a fill-up at the cheapest truck
 stop near the start (it appears in `fuel_stops` with `is_origin_fill: true`). The consequence is
-that `totals.gallons` comes to exactly `distance ÷ mpg` and the total covers the whole trip. The
+that `totals.gallons` equals `distance ÷ mpg` (to within 0.1 gallon — fuel is planned in whole miles
+of range) and the total covers the whole trip. The
 alternative — assume a free full tank — would report **$0.00** for any trip under 500 miles.
 Pass `start_fuel_gallons=50` if you want that reading instead.
 
@@ -189,8 +223,10 @@ are tested against a US outline (Natural Earth 1:50m), with a fallback that acce
 within 25 miles of a US truck stop in the dataset — without it, border and coastal cities like
 El Paso and Manhattan fall marginally outside a 50m coastline.
 
-**The plan is cost-optimal, not stop-count-optimal.** On a short route with prices falling as you
-go, buying the minimum at each of several stops really is cheapest, so that is what is returned.
+**A stop costs $5 of driver time, plus its detour.** See the optimiser section: this is what turns
+27 stops into 9. `stop_penalty=0` drops the time cost; the pure cheapest-fuel plan (no stop or detour
+costs at all) is reported next to every answer under `optimization.cheapest_fuel_only_plan`. The detour fuel steers the choice of station; it is not
+added to `totals`, which report the fuel for the route itself.
 
 ---
 
@@ -200,18 +236,18 @@ Measured on this machine, Dallas → New York (1,552 miles, 21,016 route points)
 
 | | |
 |---|---|
-| Total, cold | **1.5 s** |
-| ↳ waiting on the free routing server | 1.36 s |
-| ↳ **this API's own work** | **~130 ms** |
-| Repeat request (cached plan) | **0.3 ms** compute, 3 ms wall |
+| Total, cold | **1.6 s** |
+| ↳ waiting on the free routing server | 1.44 s |
+| ↳ **this API's own work** | **~150 ms** |
+| Repeat request (cached plan) | **1 ms** compute; 5 ms median over HTTP in Docker |
 | Geocoding `Dallas, TX` and `New York, NY` | 0 ms network — offline |
 | Corridor match + distance accumulation | 63 ms + 14 ms |
-| Optimiser (388 candidates) | 0.3 ms |
+| Optimiser, both plans (385 candidates) | ~10 ms |
 | Thinning the geometry for the response | 58 ms |
-| Station index build (once per process, at start-up) | 76 ms |
+| Station index build (once, before gunicorn forks its workers) | 76 ms |
 | Response size | 25 KB (geometry thinned from 21,016 points to 1,066 with Douglas-Peucker) |
 
-The work that is actually ours is the ~130 ms. The cold path is dominated by the one routing call to
+The work that is actually ours is the ~150 ms. The cold path is dominated by the one routing call to
 a free public server; OpenRouteService with a key performs about the same from here, and a
 self-hosted OSRM (`OSRM_BASE_URL`) would remove most of it. Requests ask for `polyline6` geometry,
 which is about five times smaller over the wire than GeoJSON.
@@ -219,14 +255,16 @@ which is about five times smaller over the wire than GeoJSON.
 ## Tests
 
 ```bash
-python manage.py test        # 61 tests, ~0.3 s, no network access
+python manage.py test        # 78 tests, ~0.7 s, no network access
 ```
 
 The routing provider is mocked and locations are passed as coordinates, so the suite never touches
 the internet. It covers the optimiser against hand-computed answers and against brute force, the
 corridor index, the gazetteer name normalisation (`Oklahoma City city`, `Indianapolis city
-(balance)`, `Mc Calla`), the US service-area rules, geocode caching, and the API contract —
-including the 400, 422, 502 and 503 paths and the cache actually preventing a second routing call.
+(balance)`, `Mc Calla`), the US service-area rules, geocode caching, routing retries and exact call
+counting, and the API contract — including every 400, 422, 502 and 503 path, `map_url`
+reproducing the exact plan, totals summing to the cent, and the cache actually preventing a second
+routing call.
 They run on every push in GitHub Actions (badge at the top), and the suite ignores any ORS key in
 your `.env`, so it behaves the same everywhere.
 
@@ -247,7 +285,7 @@ routeplanner/
     places.py               "City, ST" → coordinates offline, from the Census place file
     geocoding.py            everything else → online geocoder, US-filtered, DB-cached
     corridor.py             grid index; stations near a route, with mile markers
-    optimizer.py            the gas station algorithm
+    optimizer.py            dynamic program: where to stop and how much to buy
     planner.py              orchestration, caching, response building
     gazetteer.py            Census place-name normalisation
     service_area.py         "is this in the USA?"
@@ -271,7 +309,8 @@ data/
   Angeles → Seattle has an 877-mile stretch with nothing in range, so it returns 422 — correctly,
   given a 500-mile tank. `range_miles=1000` plans it fine. This is the dataset, not the algorithm.
 - City-centroid coordinates mean `detour_miles` is an estimate of how far off the highway a stop
-  is, not a measured driving detour. Detours are not added to the trip distance.
+  is, not a measured driving detour. It steers which station is chosen but is not added to the
+  trip distance or the totals.
 - Prices are a static snapshot; there is no refresh job.
 - Planned routes are cached on disk, so every gunicorn worker shares them. That is right for one
   machine; across several, point Django's cache at Redis instead. The station index is
@@ -285,4 +324,4 @@ data/
 - Geocoding: [US Census Gazetteer](https://www.census.gov/geographies/reference-files/time-series/geo/gazetteer-files.html)
   and [Nominatim](https://nominatim.org/) (© OpenStreetMap contributors, ODbL).
 - US outline: [Natural Earth](https://www.naturalearthdata.com/) 1:50m, public domain.
-- Map tiles: OpenStreetMap via CARTO.
+- Map tiles: [OpenStreetMap](https://www.openstreetmap.org/copyright) standard tiles, no key required.

@@ -19,6 +19,10 @@ from .routing import RouteResult, fetch_route
 logger = logging.getLogger(__name__)
 
 
+class SameLocationError(ValueError):
+    """Start and finish are the same place - there is no trip to plan."""
+
+
 @dataclass
 class PlanRequest:
     start: str
@@ -27,6 +31,8 @@ class PlanRequest:
     range_miles: float
     max_detour_miles: float
     start_fuel_gallons: float = 0.0
+    # Dollars charged per fuel stop when choosing where to stop (see optimizer.py).
+    stop_penalty: float = 5.0
     include_geometry: bool = True
     refresh: bool = False
 
@@ -61,6 +67,7 @@ def _cache_key(start: Place, finish: Place, request: PlanRequest) -> str:
             request.range_miles,
             request.max_detour_miles,
             request.start_fuel_gallons,
+            request.stop_penalty,
             request.include_geometry,
         )
     )
@@ -140,22 +147,25 @@ def _build_response(
     finish: Place,
     route: RouteResult,
     plan: FuelPlan | None,
+    fuel_only: FuelPlan | None,
     context: PlanContext,
     candidate_count: int,
     detour_used: float,
 ) -> dict:
     average_price = _average_price()
     gallons_for_trip = route.distance_miles / request.mpg
-    baseline_cost = gallons_for_trip * average_price
 
     if plan is not None:
         stops = _serialize_stops(plan)
-        total_gallons = plan.total_gallons
-        total_cost = plan.total_cost
+        # Totals are the sum of the per-stop figures exactly as shown, so a
+        # reader adding up the stops gets the same answer to the cent.
+        total_gallons = round(sum(stop["gallons"] for stop in stops), 2)
+        total_cost = round(sum(stop["cost"] for stop in stops), 2)
     else:
         stops = []
-        total_gallons = gallons_for_trip
-        total_cost = baseline_cost
+        total_gallons = round(gallons_for_trip, 2)
+        total_cost = round(gallons_for_trip * average_price, 2)
+    baseline_cost = round(total_gallons * average_price, 2)
 
     payload = {
         "start": {
@@ -187,13 +197,14 @@ def _build_response(
         "fuel_stops": stops,
         "totals": {
             "stops": len(stops),
-            "gallons": round(total_gallons, 2),
-            "fuel_cost": round(total_cost, 2),
+            "gallons": total_gallons,
+            "fuel_cost": total_cost,
             "average_price_paid": round(total_cost / total_gallons, 3) if total_gallons else 0.0,
-            "cost_at_national_average": round(baseline_cost, 2),
+            "cost_at_national_average": baseline_cost,
             "savings_vs_national_average": round(baseline_cost - total_cost, 2),
             "national_average_price": round(average_price, 3),
         },
+        "optimization": _optimization_summary(request, plan, fuel_only, total_cost),
         "meta": {
             "external_api_calls": context.api_calls,
             "cached": False,
@@ -218,6 +229,28 @@ def _build_response(
     return payload
 
 
+def _optimization_summary(
+    request: PlanRequest, plan: FuelPlan | None, fuel_only: FuelPlan | None, total_cost: float
+) -> dict:
+    """What was minimised, and what the pure cheapest-fuel plan would have been."""
+    summary = {
+        "objective": (
+            f"fuel cost + ${request.stop_penalty:.2f} per stop + the fuel to drive "
+            "off the route to each station and back"
+        ),
+        "stop_penalty": request.stop_penalty,
+    }
+    if plan is not None and fuel_only is not None:
+        fuel_only_stops = len(_merge_repeat_visits(fuel_only))
+        fuel_only_cost = round(fuel_only.total_cost, 2)
+        summary["cheapest_fuel_only_plan"] = {
+            "stops": fuel_only_stops,
+            "fuel_cost": fuel_only_cost,
+        }
+        summary["extra_fuel_cost_for_fewer_stops"] = round(total_cost - fuel_only_cost, 2)
+    return summary
+
+
 def plan_route(request: PlanRequest) -> dict:
     """Plan a route and its fuel stops. Returns a JSON-ready dict."""
     started = time.perf_counter()
@@ -226,6 +259,12 @@ def plan_route(request: PlanRequest) -> dict:
     start = geocode(request.start)
     finish = geocode(request.finish)
     context.api_calls += start.api_calls + finish.api_calls
+
+    if geo.haversine_miles(*start.coordinates, *finish.coordinates) < 1.0:
+        raise SameLocationError(
+            f"'{request.start}' and '{request.finish}' are the same place - there is no "
+            "route to plan."
+        )
 
     key = _cache_key(start, finish, request)
     if not request.refresh:
@@ -246,6 +285,7 @@ def plan_route(request: PlanRequest) -> dict:
     detour = request.max_detour_miles
     limit = _config("MAX_DETOUR_MILES_LIMIT")
     plan: FuelPlan | None = None
+    fuel_only: FuelPlan | None = None
     candidates: list[CandidateStop] = []
     last_error: InfeasibleRouteError | None = None
 
@@ -255,6 +295,16 @@ def plan_route(request: PlanRequest) -> dict:
         candidates, _ = _match_corridor(route, detour)
         try:
             plan = plan_fuel_stops(
+                candidates,
+                route.distance_miles,
+                mpg=request.mpg,
+                range_miles=request.range_miles,
+                start_fuel_gallons=request.start_fuel_gallons,
+                stop_penalty=request.stop_penalty,
+                count_detours=True,
+            )
+            # The same route solved for fuel money alone, for comparison.
+            fuel_only = plan_fuel_stops(
                 candidates,
                 route.distance_miles,
                 mpg=request.mpg,
@@ -284,7 +334,7 @@ def plan_route(request: PlanRequest) -> dict:
             raise last_error
 
     payload = _build_response(
-        request, start, finish, route, plan, context, len(candidates), detour
+        request, start, finish, route, plan, fuel_only, context, len(candidates), detour
     )
     cache.set(key, payload, _config("PLAN_CACHE_SECONDS"))
     payload["meta"]["compute_ms"] = round((time.perf_counter() - started) * 1000, 1)

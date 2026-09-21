@@ -169,6 +169,9 @@ ROUTE_PLANNER = {
     # Vehicle defaults from the assignment brief.
     "DEFAULT_MPG": 10.0,
     "DEFAULT_RANGE_MILES": 500.0,
+    # Dollars per fuel stop when choosing stops: roughly a 10 minute stop at a
+    # driver's hourly cost. 0 drops the time cost (detour fuel still counts).
+    "DEFAULT_STOP_PENALTY": 5.0,
     # How far off the route a truck stop may sit and still be considered.
     "DEFAULT_MAX_DETOUR_MILES": 15.0,
     "MAX_DETOUR_MILES_LIMIT": 50.0,

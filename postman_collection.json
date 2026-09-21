@@ -1,13 +1,21 @@
 {
   "info": {
     "name": "Fuel-Optimal Route API",
-    "description": "Plans a US route and the cheapest way to fuel it (500 mile range, 10 mpg).\n\nRun the requests top to bottom (or use Run collection). Each one has tests - open the Test Results tab. Request 1 is forced cold with refresh=true; request 2 is the same route served from cache with zero external API calls. Every successful response includes map_url: open it to see the route and fuel stops on a map.",
+    "description": "Plans a US route and the cheapest practical way to fuel it (500 mile range, 10 mpg).\n\nRun the requests top to bottom, or use Run collection. Each has tests - open the Test Results tab. Request 1 is forced cold; request 2 is the same route from cache with zero external API calls; request 3 shows the cheapest-fuel-only plan for comparison. Every successful response includes map_url: open it to see the route and fuel stops on a map.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     {
       "key": "base_url",
       "value": "http://localhost:8000"
+    },
+    {
+      "key": "default_cost",
+      "value": ""
+    },
+    {
+      "key": "default_stops",
+      "value": ""
     }
   ],
   "item": [
@@ -37,11 +45,11 @@
             },
             {
               "key": "refresh",
-              "value": "true",
-              "description": "Skip the cache so the demo shows a cold plan"
+              "value": "true"
             }
           ]
-        }
+        },
+        "description": "refresh=true skips the cache so this is a genuinely cold plan."
       },
       "event": [
         {
@@ -54,16 +62,22 @@
               "pm.test(\"returns a map of the route\", () => pm.expect(b.map_url).to.include(\"/map/\"));",
               "pm.test(\"every mile is paid for: gallons = miles / mpg\", () =>",
               "  pm.expect(b.totals.gallons).to.be.closeTo(b.route.distance_miles / b.vehicle.mpg, 0.5));",
+              "pm.test(\"totals are the exact sum of the stops\", () => {",
+              "  const sum = b.fuel_stops.reduce((t, s) => t + s.cost, 0);",
+              "  pm.expect(b.totals.fuel_cost).to.be.closeTo(sum, 0.005);",
+              "});",
               "pm.test(\"no two stops further apart than the range\", () => {",
               "  const m = b.fuel_stops.map(s => s.mile_marker);",
               "  for (let i = 1; i < m.length; i++) pm.expect(m[i] - m[i-1]).to.be.at.most(b.vehicle.range_miles);",
               "});",
               "pm.test(\"at most 3 external API calls\", () => pm.expect(b.meta.external_api_calls).to.be.at.most(3));",
               "console.log(`${b.route.distance_miles} mi, ${b.totals.stops} stops, $${b.totals.fuel_cost} ` +",
-              "  `(saved $${b.totals.savings_vs_national_average}), ${b.meta.external_api_calls} external call(s), ` +",
-              "  `${b.meta.compute_ms} ms`);",
+              "  `(cheapest-fuel-only plan: ${b.optimization.cheapest_fuel_only_plan ? b.optimization.cheapest_fuel_only_plan.stops + \" stops, $\" + b.optimization.cheapest_fuel_only_plan.fuel_cost : \"n/a\"}), ` +",
+              "  `${b.meta.external_api_calls} external call(s), ${b.meta.compute_ms} ms`);",
               "pm.test(\"place names resolved offline: exactly 1 external call (the route)\", () =>",
-              "  pm.expect(b.meta.external_api_calls).to.eql(1));"
+              "  pm.expect(b.meta.external_api_calls).to.eql(1));",
+              "pm.test(\"fewer stops than the cheapest-fuel-only plan would make\", () =>",
+              "  pm.expect(b.totals.stops).to.be.at.most(b.optimization.cheapest_fuel_only_plan.stops));"
             ]
           }
         }
@@ -107,23 +121,93 @@
               "pm.test(\"returns a map of the route\", () => pm.expect(b.map_url).to.include(\"/map/\"));",
               "pm.test(\"every mile is paid for: gallons = miles / mpg\", () =>",
               "  pm.expect(b.totals.gallons).to.be.closeTo(b.route.distance_miles / b.vehicle.mpg, 0.5));",
+              "pm.test(\"totals are the exact sum of the stops\", () => {",
+              "  const sum = b.fuel_stops.reduce((t, s) => t + s.cost, 0);",
+              "  pm.expect(b.totals.fuel_cost).to.be.closeTo(sum, 0.005);",
+              "});",
               "pm.test(\"no two stops further apart than the range\", () => {",
               "  const m = b.fuel_stops.map(s => s.mile_marker);",
               "  for (let i = 1; i < m.length; i++) pm.expect(m[i] - m[i-1]).to.be.at.most(b.vehicle.range_miles);",
               "});",
               "pm.test(\"at most 3 external API calls\", () => pm.expect(b.meta.external_api_calls).to.be.at.most(3));",
               "console.log(`${b.route.distance_miles} mi, ${b.totals.stops} stops, $${b.totals.fuel_cost} ` +",
-              "  `(saved $${b.totals.savings_vs_national_average}), ${b.meta.external_api_calls} external call(s), ` +",
-              "  `${b.meta.compute_ms} ms`);",
+              "  `(cheapest-fuel-only plan: ${b.optimization.cheapest_fuel_only_plan ? b.optimization.cheapest_fuel_only_plan.stops + \" stops, $\" + b.optimization.cheapest_fuel_only_plan.fuel_cost : \"n/a\"}), ` +",
+              "  `${b.meta.external_api_calls} external call(s), ${b.meta.compute_ms} ms`);",
               "pm.test(\"served from cache\", () => pm.expect(b.meta.cached).to.be.true);",
-              "pm.test(\"zero external API calls\", () => pm.expect(b.meta.external_api_calls).to.eql(0));"
+              "pm.test(\"zero external API calls\", () => pm.expect(b.meta.external_api_calls).to.eql(0));",
+              "pm.collectionVariables.set(\"default_cost\", b.totals.fuel_cost);",
+              "pm.collectionVariables.set(\"default_stops\", b.totals.stops);"
             ]
           }
         }
       ]
     },
     {
-      "name": "3. Coordinates in, zero geocoding calls",
+      "name": "3. Same route, no charge for driver time (stop_penalty=0)",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/api/v1/route/?start=Dallas, TX&finish=New York, NY&stop_penalty=0",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "route",
+            ""
+          ],
+          "query": [
+            {
+              "key": "start",
+              "value": "Dallas, TX"
+            },
+            {
+              "key": "finish",
+              "value": "New York, NY"
+            },
+            {
+              "key": "stop_penalty",
+              "value": "0"
+            }
+          ]
+        },
+        "description": "stop_penalty=0 removes the $5 time cost per stop (detour fuel still counts), so the plan buys cheaper fuel over more stops. Compare with request 2."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test(\"returns a map of the route\", () => pm.expect(b.map_url).to.include(\"/map/\"));",
+              "pm.test(\"every mile is paid for: gallons = miles / mpg\", () =>",
+              "  pm.expect(b.totals.gallons).to.be.closeTo(b.route.distance_miles / b.vehicle.mpg, 0.5));",
+              "pm.test(\"totals are the exact sum of the stops\", () => {",
+              "  const sum = b.fuel_stops.reduce((t, s) => t + s.cost, 0);",
+              "  pm.expect(b.totals.fuel_cost).to.be.closeTo(sum, 0.005);",
+              "});",
+              "pm.test(\"no two stops further apart than the range\", () => {",
+              "  const m = b.fuel_stops.map(s => s.mile_marker);",
+              "  for (let i = 1; i < m.length; i++) pm.expect(m[i] - m[i-1]).to.be.at.most(b.vehicle.range_miles);",
+              "});",
+              "pm.test(\"at most 3 external API calls\", () => pm.expect(b.meta.external_api_calls).to.be.at.most(3));",
+              "console.log(`${b.route.distance_miles} mi, ${b.totals.stops} stops, $${b.totals.fuel_cost} ` +",
+              "  `(cheapest-fuel-only plan: ${b.optimization.cheapest_fuel_only_plan ? b.optimization.cheapest_fuel_only_plan.stops + \" stops, $\" + b.optimization.cheapest_fuel_only_plan.fuel_cost : \"n/a\"}), ` +",
+              "  `${b.meta.external_api_calls} external call(s), ${b.meta.compute_ms} ms`);",
+              "const cost = Number(pm.collectionVariables.get(\"default_cost\"));",
+              "const stops = Number(pm.collectionVariables.get(\"default_stops\"));",
+              "pm.test(\"cheaper fuel than the default plan...\", () => pm.expect(b.totals.fuel_cost).to.be.at.most(cost));",
+              "pm.test(\"...by making more stops\", () => pm.expect(b.totals.stops).to.be.at.least(stops));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Coordinates in, zero geocoding calls",
       "request": {
         "method": "GET",
         "url": {
@@ -160,14 +244,18 @@
               "pm.test(\"returns a map of the route\", () => pm.expect(b.map_url).to.include(\"/map/\"));",
               "pm.test(\"every mile is paid for: gallons = miles / mpg\", () =>",
               "  pm.expect(b.totals.gallons).to.be.closeTo(b.route.distance_miles / b.vehicle.mpg, 0.5));",
+              "pm.test(\"totals are the exact sum of the stops\", () => {",
+              "  const sum = b.fuel_stops.reduce((t, s) => t + s.cost, 0);",
+              "  pm.expect(b.totals.fuel_cost).to.be.closeTo(sum, 0.005);",
+              "});",
               "pm.test(\"no two stops further apart than the range\", () => {",
               "  const m = b.fuel_stops.map(s => s.mile_marker);",
               "  for (let i = 1; i < m.length; i++) pm.expect(m[i] - m[i-1]).to.be.at.most(b.vehicle.range_miles);",
               "});",
               "pm.test(\"at most 3 external API calls\", () => pm.expect(b.meta.external_api_calls).to.be.at.most(3));",
               "console.log(`${b.route.distance_miles} mi, ${b.totals.stops} stops, $${b.totals.fuel_cost} ` +",
-              "  `(saved $${b.totals.savings_vs_national_average}), ${b.meta.external_api_calls} external call(s), ` +",
-              "  `${b.meta.compute_ms} ms`);",
+              "  `(cheapest-fuel-only plan: ${b.optimization.cheapest_fuel_only_plan ? b.optimization.cheapest_fuel_only_plan.stops + \" stops, $\" + b.optimization.cheapest_fuel_only_plan.fuel_cost : \"n/a\"}), ` +",
+              "  `${b.meta.external_api_calls} external call(s), ${b.meta.compute_ms} ms`);",
               "pm.test(\"coordinates cost no geocoding call\", () => pm.expect(b.start.geocoder).to.eql(\"coordinates\"));"
             ]
           }
@@ -175,7 +263,7 @@
       ]
     },
     {
-      "name": "4. POST with custom vehicle",
+      "name": "5. POST with custom vehicle",
       "request": {
         "method": "POST",
         "header": [
@@ -212,21 +300,27 @@
               "pm.test(\"returns a map of the route\", () => pm.expect(b.map_url).to.include(\"/map/\"));",
               "pm.test(\"every mile is paid for: gallons = miles / mpg\", () =>",
               "  pm.expect(b.totals.gallons).to.be.closeTo(b.route.distance_miles / b.vehicle.mpg, 0.5));",
+              "pm.test(\"totals are the exact sum of the stops\", () => {",
+              "  const sum = b.fuel_stops.reduce((t, s) => t + s.cost, 0);",
+              "  pm.expect(b.totals.fuel_cost).to.be.closeTo(sum, 0.005);",
+              "});",
               "pm.test(\"no two stops further apart than the range\", () => {",
               "  const m = b.fuel_stops.map(s => s.mile_marker);",
               "  for (let i = 1; i < m.length; i++) pm.expect(m[i] - m[i-1]).to.be.at.most(b.vehicle.range_miles);",
               "});",
               "pm.test(\"at most 3 external API calls\", () => pm.expect(b.meta.external_api_calls).to.be.at.most(3));",
               "console.log(`${b.route.distance_miles} mi, ${b.totals.stops} stops, $${b.totals.fuel_cost} ` +",
-              "  `(saved $${b.totals.savings_vs_national_average}), ${b.meta.external_api_calls} external call(s), ` +",
-              "  `${b.meta.compute_ms} ms`);"
+              "  `(cheapest-fuel-only plan: ${b.optimization.cheapest_fuel_only_plan ? b.optimization.cheapest_fuel_only_plan.stops + \" stops, $\" + b.optimization.cheapest_fuel_only_plan.fuel_cost : \"n/a\"}), ` +",
+              "  `${b.meta.external_api_calls} external call(s), ${b.meta.compute_ms} ms`);",
+              "pm.test(\"custom vehicle applied\", () => pm.expect(b.vehicle.range_miles).to.eql(400));",
+              "pm.test(\"map_url carries the custom parameters\", () => pm.expect(b.map_url).to.include(\"range_miles=400\"));"
             ]
           }
         }
       ]
     },
     {
-      "name": "5. Short hop (Austin -> Houston)",
+      "name": "6. Short hop (Austin -> Houston)",
       "request": {
         "method": "GET",
         "url": {
@@ -267,21 +361,25 @@
               "pm.test(\"returns a map of the route\", () => pm.expect(b.map_url).to.include(\"/map/\"));",
               "pm.test(\"every mile is paid for: gallons = miles / mpg\", () =>",
               "  pm.expect(b.totals.gallons).to.be.closeTo(b.route.distance_miles / b.vehicle.mpg, 0.5));",
+              "pm.test(\"totals are the exact sum of the stops\", () => {",
+              "  const sum = b.fuel_stops.reduce((t, s) => t + s.cost, 0);",
+              "  pm.expect(b.totals.fuel_cost).to.be.closeTo(sum, 0.005);",
+              "});",
               "pm.test(\"no two stops further apart than the range\", () => {",
               "  const m = b.fuel_stops.map(s => s.mile_marker);",
               "  for (let i = 1; i < m.length; i++) pm.expect(m[i] - m[i-1]).to.be.at.most(b.vehicle.range_miles);",
               "});",
               "pm.test(\"at most 3 external API calls\", () => pm.expect(b.meta.external_api_calls).to.be.at.most(3));",
               "console.log(`${b.route.distance_miles} mi, ${b.totals.stops} stops, $${b.totals.fuel_cost} ` +",
-              "  `(saved $${b.totals.savings_vs_national_average}), ${b.meta.external_api_calls} external call(s), ` +",
-              "  `${b.meta.compute_ms} ms`);"
+              "  `(cheapest-fuel-only plan: ${b.optimization.cheapest_fuel_only_plan ? b.optimization.cheapest_fuel_only_plan.stops + \" stops, $\" + b.optimization.cheapest_fuel_only_plan.fuel_cost : \"n/a\"}), ` +",
+              "  `${b.meta.external_api_calls} external call(s), ${b.meta.compute_ms} ms`);"
             ]
           }
         }
       ]
     },
     {
-      "name": "6. Error: location outside the USA (400)",
+      "name": "7. Error: location outside the USA (400)",
       "request": {
         "method": "GET",
         "url": {
@@ -323,7 +421,7 @@
       ]
     },
     {
-      "name": "7. Error: no station can bridge the range (422)",
+      "name": "8. Error: no station can bridge the range (422)",
       "request": {
         "method": "GET",
         "url": {
@@ -347,7 +445,8 @@
               "value": "Seattle, WA"
             }
           ]
-        }
+        },
+        "description": "The price file has 8 truck stops in California: there is an 877-mile stretch with nothing in range."
       },
       "event": [
         {
@@ -367,7 +466,49 @@
       ]
     },
     {
-      "name": "8. Health / dataset summary",
+      "name": "9. Error: start and finish are the same place (400)",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/api/v1/route/?start=Dallas, TX&finish=Dallas, Texas",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "route",
+            ""
+          ],
+          "query": [
+            {
+              "key": "start",
+              "value": "Dallas, TX"
+            },
+            {
+              "key": "finish",
+              "value": "Dallas, Texas"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"400 same location, with no API call spent\", () => {",
+              "  pm.response.to.have.status(400);",
+              "  pm.expect(pm.response.json().error).to.eql(\"same_location\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "10. Health / dataset summary",
       "request": {
         "method": "GET",
         "url": {

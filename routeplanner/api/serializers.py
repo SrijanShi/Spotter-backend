@@ -32,6 +32,15 @@ class RouteRequestSerializer(serializers.Serializer):
         min_value=0,
         help_text="Fuel already in the tank at the start. Default 0 (every mile is paid for).",
     )
+    stop_penalty = serializers.FloatField(
+        required=False,
+        min_value=0,
+        max_value=1000,
+        help_text=(
+            "Dollars charged per fuel stop when choosing where to stop (driver time), on top "
+            "of the fuel to reach the station. Default 5. 0 ignores driver time; detour fuel still counts."
+        ),
+    )
     include_geometry = serializers.BooleanField(
         required=False, default=True, help_text="Include the route polyline in the response."
     )
@@ -57,6 +66,11 @@ class RouteRequestSerializer(serializers.Serializer):
             range_miles=data.get("range_miles") or config["DEFAULT_RANGE_MILES"],
             max_detour_miles=data.get("max_detour_miles") or config["DEFAULT_MAX_DETOUR_MILES"],
             start_fuel_gallons=data.get("start_fuel_gallons") or 0.0,
+            stop_penalty=(
+                data["stop_penalty"]
+                if data.get("stop_penalty") is not None
+                else config["DEFAULT_STOP_PENALTY"]
+            ),
             include_geometry=data.get("include_geometry", True),
             refresh=data.get("refresh", False),
         )
@@ -101,4 +115,5 @@ class RoutePlanSerializer(serializers.Serializer):
     vehicle = serializers.DictField()
     fuel_stops = FuelStopSerializer(many=True)
     totals = RouteTotalsSerializer()
+    optimization = serializers.DictField()
     meta = serializers.DictField()

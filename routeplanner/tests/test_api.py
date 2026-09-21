@@ -14,7 +14,7 @@ from django.urls import reverse
 from routeplanner.models import FuelStation
 from routeplanner.services import geo
 from routeplanner.services.corridor import reset_station_index
-from routeplanner.services.routing import RouteResult, RoutingError
+from routeplanner.services.routing import NoRouteError, RouteResult, RoutingError
 
 # A straight line due east along latitude 35, from -100 to -88 (~680 miles).
 ROUTE_POINTS = [(35.0, -100.0 + i / 10) for i in range(121)]
@@ -70,8 +70,27 @@ class RoutePlanApiTests(TestCase):
         self.assertEqual(body["vehicle"]["mpg"], 10.0)
         self.assertEqual(body["vehicle"]["range_miles"], 500.0)
 
-        # Every mile of the trip is paid for: gallons == distance / mpg.
-        self.assertAlmostEqual(body["totals"]["gallons"], ROUTE_MILES / 10, places=1)
+        # Every mile of the trip is paid for: gallons == distance / mpg, give or
+        # take the one-mile resolution fuel is planned at (0.1 gal at 10 mpg).
+        surplus = body["totals"]["gallons"] - ROUTE_MILES / 10
+        self.assertGreaterEqual(surplus, -0.01)
+        self.assertLessEqual(surplus, 0.1 + 0.01)
+
+        # The totals are exactly the sum of the stops as shown.
+        self.assertAlmostEqual(
+            body["totals"]["fuel_cost"], sum(s["cost"] for s in body["fuel_stops"]), places=2
+        )
+        self.assertAlmostEqual(
+            body["totals"]["gallons"], sum(s["gallons"] for s in body["fuel_stops"]), places=2
+        )
+
+        # What was optimised, and the pure cheapest-fuel plan for comparison.
+        optimization = body["optimization"]
+        self.assertEqual(optimization["stop_penalty"], 5.0)
+        self.assertLessEqual(
+            optimization["cheapest_fuel_only_plan"]["fuel_cost"],
+            body["totals"]["fuel_cost"] + 0.01,
+        )
         self.assertGreater(body["totals"]["fuel_cost"], 0)
         self.assertEqual(body["totals"]["stops"], len(body["fuel_stops"]))
 
@@ -171,6 +190,39 @@ class RoutePlanApiTests(TestCase):
         body = response.json()
         self.assertGreater(body["meta"]["max_detour_miles"], 1)
         self.assertTrue(body["meta"]["warnings"])
+
+
+    @mock.patch("routeplanner.services.planner.fetch_route", side_effect=fake_route)
+    def test_map_url_reproduces_the_exact_plan(self, fetch):
+        body = self.plan(max_detour_miles="20", start_fuel_gallons="10", stop_penalty="0").json()
+        for fragment in ("max_detour_miles=20", "start_fuel_gallons=10", "stop_penalty=0"):
+            self.assertIn(fragment, body["map_url"])
+
+    @mock.patch("routeplanner.services.planner.fetch_route", side_effect=fake_route)
+    def test_stop_penalty_zero_is_the_cheapest_fuel_plan(self, fetch):
+        body = self.plan(stop_penalty="0").json()
+        cheapest = body["optimization"]["cheapest_fuel_only_plan"]
+        # Detours are still priced, so allow for them choosing a different stop.
+        self.assertLessEqual(cheapest["fuel_cost"], body["totals"]["fuel_cost"] + 0.01)
+
+    def test_negative_stop_penalty_is_rejected(self):
+        self.assertEqual(self.plan(stop_penalty="-1").status_code, 400)
+
+    @mock.patch("routeplanner.services.planner.fetch_route")
+    def test_same_start_and_finish_is_rejected_without_a_routing_call(self, fetch):
+        response = self.plan(finish=START)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"], "same_location")
+        fetch.assert_not_called()
+
+    @mock.patch(
+        "routeplanner.services.planner.fetch_route",
+        side_effect=NoRouteError("OSRM: Impossible route between points"),
+    )
+    def test_no_road_between_the_points_is_a_422_not_an_outage(self, fetch):
+        response = self.plan()
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["error"], "no_drivable_route")
 
 
 class EmptyDatasetTests(TestCase):

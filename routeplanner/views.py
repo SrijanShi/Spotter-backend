@@ -20,6 +20,7 @@ class MapView(TemplateView):
                 "finish": self.request.GET.get("finish", "New York, NY"),
                 "mpg": self.request.GET.get("mpg", config["DEFAULT_MPG"]),
                 "range_miles": self.request.GET.get("range_miles", config["DEFAULT_RANGE_MILES"]),
+                "stop_penalty": self.request.GET.get("stop_penalty", config["DEFAULT_STOP_PENALTY"]),
                 "autorun": "start" in self.request.GET and "finish" in self.request.GET,
             }
         )
