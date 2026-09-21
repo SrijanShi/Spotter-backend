@@ -80,6 +80,10 @@ class RoutePlanApiTests(TestCase):
         self.assertEqual(miles, sorted(miles))
         self.assertTrue(all(b - a <= 500 for a, b in zip(miles, miles[1:])))
 
+        # A map of the route is part of every answer.
+        self.assertIn("/map/?", body["map_url"])
+        self.assertTrue(body["map_url"].startswith("http"))
+
         # One routing call, no geocoding calls (coordinates were supplied).
         self.assertEqual(body["meta"]["external_api_calls"], 1)
         self.assertEqual(fetch.call_count, 1)
@@ -101,6 +105,8 @@ class RoutePlanApiTests(TestCase):
         self.assertEqual(self.plan().status_code, 200)
         body = self.plan().json()
         self.assertTrue(body["meta"]["cached"])
+        self.assertEqual(body["meta"]["external_api_calls"], 0)
+        self.assertEqual(body["meta"]["routing_api_ms"], 0.0)
         self.assertEqual(fetch.call_count, 1)  # no second call to the router
 
     @mock.patch("routeplanner.services.planner.fetch_route", side_effect=fake_route)

@@ -1,6 +1,8 @@
 import logging
+from urllib.parse import urlencode
 
 from django.conf import settings
+from django.urls import reverse
 from drf_spectacular.utils import OpenApiExample, OpenApiParameter, extend_schema
 from rest_framework import status
 from rest_framework.response import Response
@@ -93,7 +95,15 @@ class RoutePlanView(APIView):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        return Response(payload)
+        return Response({"map_url": self._map_url(serializer.validated_data), **payload})
+
+    def _map_url(self, data) -> str:
+        """Link to this exact plan drawn on a map - the "map of the route"."""
+        params = {"start": data["start"], "finish": data["finish"]}
+        for key in ("mpg", "range_miles"):
+            if data.get(key):
+                params[key] = data[key]
+        return self.request.build_absolute_uri(f"{reverse('map')}?{urlencode(params)}")
 
 
 class HealthView(APIView):

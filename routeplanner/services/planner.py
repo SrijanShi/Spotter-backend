@@ -233,6 +233,7 @@ def plan_route(request: PlanRequest) -> dict:
         if cached is not None:
             payload = {**cached, "meta": {**cached["meta"], "cached": True}}
             payload["meta"]["external_api_calls"] = context.api_calls
+            payload["meta"]["routing_api_ms"] = 0.0
             payload["meta"]["compute_ms"] = round((time.perf_counter() - started) * 1000, 1)
             return payload
 

@@ -94,6 +94,7 @@ class RouteTotalsSerializer(serializers.Serializer):
 
 
 class RoutePlanSerializer(serializers.Serializer):
+    map_url = serializers.URLField(help_text="This route and its fuel stops drawn on a map.")
     start = serializers.DictField()
     finish = serializers.DictField()
     route = serializers.DictField()
