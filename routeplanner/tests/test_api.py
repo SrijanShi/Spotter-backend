@@ -168,9 +168,13 @@ class RoutePlanApiTests(TestCase):
         side_effect=RoutingError("all providers down"),
     )
     def test_routing_failure_is_surfaced_as_502(self, fetch):
-        response = self.plan()
+        # The outage is logged for whoever runs the service - capture it here
+        # so it is checked rather than printed into the test output.
+        with self.assertLogs("routeplanner.api.views", level="ERROR") as logs:
+            response = self.plan()
         self.assertEqual(response.status_code, 502)
         self.assertEqual(response.json()["error"], "routing_unavailable")
+        self.assertIn("all providers down", logs.output[0])
 
     @mock.patch("routeplanner.services.planner.fetch_route", side_effect=fake_route)
     def test_a_range_no_station_can_bridge_returns_422(self, fetch):

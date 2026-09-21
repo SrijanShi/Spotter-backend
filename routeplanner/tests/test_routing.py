@@ -8,6 +8,8 @@ from django.conf import settings
 
 from routeplanner.services.routing import NoRouteError, RoutingError, fetch_route
 
+ROUTING_LOGGER = "routeplanner.services.routing"
+
 DALLAS = (32.7767, -96.797)
 HOUSTON = (29.7604, -95.3698)
 
@@ -41,8 +43,11 @@ class OsrmOnlyTests(SimpleTestCase):
     @mock.patch("routeplanner.services.routing.requests.request")
     def test_a_5xx_is_retried_once_and_both_calls_are_counted(self, request):
         request.side_effect = [response(503, {}), response(200, OSRM_OK)]
-        result = fetch_route(DALLAS, HOUSTON)
+        with self.assertLogs(ROUTING_LOGGER, level="WARNING") as logs:
+            result = fetch_route(DALLAS, HOUSTON)
         self.assertEqual(result.api_calls, 2)
+        self.assertEqual(len(logs.output), 1)  # the failed first attempt
+        self.assertIn("503", logs.output[0])
 
     @mock.patch("routeplanner.services.routing.requests.request")
     def test_no_route_is_not_retried(self, request):
@@ -55,10 +60,12 @@ class OsrmOnlyTests(SimpleTestCase):
     @mock.patch("routeplanner.services.routing.requests.request")
     def test_a_network_failure_is_an_outage_not_a_missing_road(self, request):
         request.side_effect = requests.ConnectionError("down")
-        with self.assertRaises(RoutingError) as caught:
-            fetch_route(DALLAS, HOUSTON)
+        with self.assertLogs(ROUTING_LOGGER, level="WARNING") as logs:
+            with self.assertRaises(RoutingError) as caught:
+                fetch_route(DALLAS, HOUSTON)
         self.assertNotIsInstance(caught.exception, NoRouteError)
         self.assertEqual(request.call_count, 2)
+        self.assertEqual(len(logs.output), 2)  # both attempts are logged
 
 
 @planner_settings(ORS_API_KEY="test-key")
