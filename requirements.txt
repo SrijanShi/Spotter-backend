@@ -3,6 +3,7 @@ Django==6.1.1
 djangorestframework==3.18.1
 drf-spectacular==0.30.0
 requests==2.34.2
+numpy==2.5.3
 
 # Serving
 gunicorn==26.2.0

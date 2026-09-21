@@ -49,11 +49,12 @@ class PlanFuelStopsTests(SimpleTestCase):
         self.assertNotIn("pricey", names[1:])
 
     def test_fills_up_when_prices_only_rise(self):
-        # $3 @0.5, $4 @300, $5 @600 on a 900 mile route.
-        # 50.05 gal at $3 (covers 500.5 mi), 29.95 at $4, 10 at $5.
-        plan = self.plan([stop(0.5, 3.00), stop(300, 4.00), stop(600, 5.00)], 900)
+        # $3 @1, $4 @300, $5 @600 on a 900 mile route.
+        # 50.1 gal at $3 (a full tank at the start, topped up at mile 1, reaches
+        # mile 501), 29.9 at $4 (fills up at mile 300, reaches 800), 10 at $5.
+        plan = self.plan([stop(1, 3.00), stop(300, 4.00), stop(600, 5.00)], 900)
         self.assertAlmostEqual(plan.total_gallons, 90.0, places=6)
-        self.assertAlmostEqual(plan.total_cost, 319.95, places=2)
+        self.assertAlmostEqual(plan.total_cost, 150.3 + 119.6 + 50.0, places=6)
         # Never more than a tank at a time.
         self.assertTrue(all(p.gallons <= plan.tank_gallons + 1e-9 for p in plan.purchases))
 
@@ -105,3 +106,52 @@ class PlanFuelStopsTests(SimpleTestCase):
         plan = self.plan(candidates, 1500)
         miles = [p.node.mile_marker for p in plan.purchases]
         self.assertEqual(miles, sorted(miles))
+
+
+class StopCostTests(SimpleTestCase):
+    """The practical plan: a fixed cost per stop, and the detour to reach it."""
+
+    def test_a_stop_penalty_trades_a_little_fuel_for_far_fewer_stops(self):
+        # Prices drift down a cent every 25 miles: the pure cheapest plan tops
+        # up at almost every station, which no driver would do.
+        candidates = [stop(mile, 4.00 - mile / 2500) for mile in range(25, 1500, 25)]
+        cheapest = plan_fuel_stops(candidates, 1500, mpg=10, range_miles=500)
+        practical = plan_fuel_stops(
+            candidates, 1500, mpg=10, range_miles=500, stop_penalty=5.0
+        )
+        self.assertGreater(len(cheapest.purchases), 10)
+        self.assertLessEqual(len(practical.purchases), 5)
+        # It pays a little more for fuel...
+        self.assertGreaterEqual(practical.total_cost, cheapest.total_cost - 1e-9)
+        # ...and is the better plan once each stop is priced at $5.
+        def with_stop_costs(plan):
+            return plan.total_cost + 5.0 * sum(1 for p in plan.purchases if not p.node.is_origin_fill)
+        self.assertLess(with_stop_costs(practical), with_stop_costs(cheapest))
+        self.assertAlmostEqual(practical.total_gallons, 150.0, places=6)
+
+    def test_a_cheap_station_far_off_the_route_can_lose_to_a_close_one(self):
+        # Both need ~30 gallons. 2 cents a gallon saves $0.60; a 14 mile detour
+        # each way burns 2.8 gallons ($8.40). The close station should win.
+        far = stop(200, 3.00, "far", detour=14.0)
+        close = stop(210, 3.02, "close", detour=0.5)
+        origin_only = stop(1, 3.50, "start", detour=0.0)
+        candidates = [origin_only, far, close]
+
+        naive = plan_fuel_stops(candidates, 500 + 200, mpg=10, range_miles=500)
+        aware = plan_fuel_stops(
+            candidates, 500 + 200, mpg=10, range_miles=500, count_detours=True
+        )
+        naive_names = {p.node.candidate.station.name for p in naive.purchases if p.node.candidate}
+        aware_names = {p.node.candidate.station.name for p in aware.purchases if p.node.candidate}
+        self.assertIn("far", naive_names)
+        self.assertIn("close", aware_names)
+        self.assertNotIn("far", aware_names)
+
+    def test_the_objective_is_fuel_plus_stop_costs(self):
+        candidates = [stop(mile, 3.0 + (mile % 7) / 20, detour=2.0) for mile in range(40, 1200, 40)]
+        plan = plan_fuel_stops(
+            candidates, 1200, mpg=10, range_miles=500, stop_penalty=5.0, count_detours=True
+        )
+        real_stops = [p for p in plan.purchases if not p.node.is_origin_fill]
+        stop_costs = sum(5.0 + 2 * 2.0 / 10 * p.node.price for p in real_stops)
+        self.assertAlmostEqual(plan.objective, plan.total_cost + stop_costs, places=6)

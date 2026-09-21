@@ -1,33 +1,48 @@
-"""Cost-optimal fuel purchasing along a route.
+"""Where to stop for fuel, and how much to buy at each stop.
 
-This is the classic "gas station problem" with a uniform tank and fuel that can
-be bought by the fraction of a gallon. The greedy rule below is provably
-optimal for that model:
+The plan minimises
 
-    At the station you are standing at, look ahead as far as the tank can carry
-    you.
-      * If a cheaper station is in reach, buy exactly enough to get to the
-        first cheaper one - never pay today's higher price for fuel you can buy
-        cheaper down the road.
-      * Otherwise this is the cheapest fuel you will see for a full tank, so
-        fill up and drive to the cheapest station in reach.
-    Near the destination, never buy more than the fuel needed to finish.
+    fuel bought  +  a fixed cost for every stop made
+
+where a stop's fixed cost is ``stop_penalty`` dollars (the driver's time, ~$5
+for a 10 minute stop) plus, optionally, the fuel to drive out to the station
+and back. With neither, this is the classic "gas station problem" and the answer
+is simply the cheapest fuel - but that answer is impractical: it happily pulls a
+truck off the interstate to buy 1.2 gallons that are 3 cents cheaper. Miami to
+Seattle takes 27 stops that way; with a $5 stop cost and detours priced it takes
+9, for 1% more fuel money. The planner reports both plans, so the trade-off is
+visible rather than hidden.
+
+Method: dynamic programming over (station, fuel in the tank). Walking the
+stations in order along the route, keep for every fuel level the cheapest way to
+arrive with that much fuel. At a station the truck either drives past, or stops
+and fills to any level. The fill step is a prefix minimum, so each station
+costs O(tank) and a cross-country route solves in a few milliseconds. Fuel is
+tracked in whole miles of range (0.1 gallon at 10 mpg), which is the only
+approximation, and the result is optimal at that resolution.
+``test_optimizer_optimality.py`` checks it against brute force.
 
 Cost model: the tank starts empty and the origin is treated as a fill-up at the
-cheapest truck stop near the start, so the gallons purchased come to exactly
-``distance / mpg`` and the returned total covers every mile of the trip.
-Callers that prefer the "starts with a full tank" reading can pass
+cheapest truck stop near the start, so the gallons purchased cover every mile of
+the trip. Callers that prefer the "starts with a full tank" reading can pass
 ``start_fuel_gallons``.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Sequence
+
+import numpy as np
 
 from .corridor import CandidateStop
 
 EPSILON = 1e-9
+INFINITY = float("inf")
+
+# Fuel is tracked in miles of range at this resolution.
+RESOLUTION_MILES = 1.0
 
 # A station this far along the route still counts as "near the start" when
 # pricing the initial tank.
@@ -68,6 +83,8 @@ class FuelPlan:
     total_cost: float
     tank_gallons: float
     fuel_remaining_gallons: float
+    # Fuel cost plus stop costs - the quantity actually minimised.
+    objective: float = 0.0
 
 
 def build_nodes(
@@ -86,8 +103,15 @@ def build_nodes(
             continue
         bucket = int(candidate.mile_marker / MILE_BUCKET)
         current = cheapest_per_bucket.get(bucket)
-        if current is None or candidate.station.price < current.station.price:
+        rank = (candidate.station.price, candidate.detour_miles)
+        if current is None or rank < (current.station.price, current.detour_miles):
             cheapest_per_bucket[bucket] = candidate
+
+    if not cheapest_per_bucket:
+        raise InfeasibleRouteError(
+            "No fuel stations were found near this route.",
+            detail={"reason": "no_stations_in_corridor"},
+        )
 
     ordered = sorted(cheapest_per_bucket.values(), key=lambda c: c.mile_marker)
     nodes = [
@@ -140,6 +164,14 @@ def check_reachability(nodes: Sequence[FuelNode], route_miles: float, range_mile
         )
 
 
+def _stop_cost(node: FuelNode, *, mpg: float, stop_penalty: float, count_detours: bool) -> float:
+    """Fixed cost of stopping at ``node``, whatever the amount bought."""
+    if node.is_origin_fill or node.candidate is None:
+        return 0.0  # the trip starts here anyway
+    detour_fuel = 2 * node.candidate.detour_miles / mpg * node.price if count_detours else 0.0
+    return stop_penalty + detour_fuel
+
+
 def plan_fuel_stops(
     candidates: Sequence[CandidateStop],
     route_miles: float,
@@ -147,77 +179,85 @@ def plan_fuel_stops(
     mpg: float,
     range_miles: float,
     start_fuel_gallons: float = 0.0,
+    stop_penalty: float = 0.0,
+    count_detours: bool = False,
 ) -> FuelPlan:
+    """Cheapest plan under the stop-cost model described in the module docstring.
+
+    ``stop_penalty`` is dollars per stop; ``count_detours`` adds the fuel to reach
+    each station and come back. Both zero gives the pure cheapest-fuel plan.
+    """
     tank_gallons = range_miles / mpg
     nodes = build_nodes(candidates, route_miles)
     check_reachability(nodes, route_miles, range_miles)
 
-    fuel = min(max(start_fuel_gallons, 0.0), tank_gallons)
+    tank = int(math.floor(range_miles / RESOLUTION_MILES + EPSILON))
+    levels = np.arange(tank + 1, dtype=float)  # fuel on board, in grid units of range
+    indexes = np.arange(tank + 1)
+
+    # cost[level] = cheapest spend to be here with `level` units of range on board.
+    cost = np.full(tank + 1, INFINITY)
+    cost[min(tank, int(round(max(start_fuel_gallons, 0.0) * mpg / RESOLUTION_MILES)))] = 0.0
+
+    decisions: list[tuple[np.ndarray, np.ndarray, int]] = []
+    position = 0
+    for node in nodes:
+        mile = int(round(node.mile_marker / RESOLUTION_MILES))
+        advance = mile - position
+        position = mile
+        if advance:
+            # Driving `advance` units burns that much range.
+            if advance > tank:
+                cost = np.full(tank + 1, INFINITY)
+            else:
+                cost = np.concatenate((cost[advance:], np.full(advance, INFINITY)))
+
+        per_unit = node.price * RESOLUTION_MILES / mpg
+        fixed = _stop_cost(node, mpg=mpg, stop_penalty=stop_penalty, count_detours=count_detours)
+
+        # Stopping here and filling up to `level` from any lower level `start`:
+        #   cost[start] + (level - start) * per_unit + fixed
+        # = fixed + level * per_unit + min over start <= level of (cost[start] - start * per_unit)
+        adjusted = cost - levels * per_unit
+        prefix_best = np.minimum.accumulate(adjusted)
+        is_new_best = adjusted <= np.concatenate(([INFINITY], prefix_best[:-1]))
+        best_start = np.maximum.accumulate(np.where(is_new_best, indexes, 0))
+        if_stopping = fixed + levels * per_unit + prefix_best
+
+        stopped = if_stopping < cost - EPSILON
+        cost = np.where(stopped, if_stopping, cost)
+        decisions.append((stopped, best_start, advance))
+
+    remaining = route_miles - position * RESOLUTION_MILES
+    needed = max(0, int(math.ceil(remaining / RESOLUTION_MILES - EPSILON)))
+    if needed > tank or not np.isfinite(cost[needed:]).any():
+        raise InfeasibleRouteError(
+            "No combination of stops covers this route within the vehicle's range.",
+            detail={
+                "reason": "range_gap",
+                "hint": "Increase max_detour_miles to consider stations further off the route.",
+            },
+        )
+    final_level = needed + int(np.argmin(cost[needed:]))
+    objective = float(cost[final_level])
+
     purchases: list[FuelPurchase] = []
-    index = 0
-    # Each iteration moves strictly forward, so this cannot spin.
-    for _ in range(len(nodes) + 1):
-        node = nodes[index]
-        remaining_miles = route_miles - node.mile_marker
-        if remaining_miles <= fuel * mpg + EPSILON:
-            break
+    level = final_level
+    for node, (stopped, best_start, advance) in zip(reversed(nodes), reversed(decisions)):
+        if stopped[level]:
+            start = int(best_start[level])
+            gallons = (level - start) * RESOLUTION_MILES / mpg
+            if gallons > EPSILON:
+                purchases.append(FuelPurchase(node=node, gallons=gallons, cost=gallons * node.price))
+            level = start
+        level += advance
+    purchases.reverse()
 
-        reach_limit = node.mile_marker + range_miles + EPSILON
-        window = []
-        j = index + 1
-        while j < len(nodes) and nodes[j].mile_marker <= reach_limit:
-            window.append(j)
-            j += 1
-
-        if not window:
-            # check_reachability already proved the destination is in range.
-            gallons_needed = remaining_miles / mpg
-            purchase = min(gallons_needed - fuel, tank_gallons - fuel)
-            if purchase > EPSILON:
-                purchases.append(
-                    FuelPurchase(node=node, gallons=purchase, cost=purchase * node.price)
-                )
-                fuel += purchase
-            break
-
-        cheaper = next((j for j in window if nodes[j].price < node.price - EPSILON), None)
-        if cheaper is not None:
-            target = cheaper
-            gallons_needed = (nodes[target].mile_marker - node.mile_marker) / mpg
-            purchase = max(gallons_needed - fuel, 0.0)
-        else:
-            # Cheapest fuel within a tank's reach: fill up, but never buy more
-            # than it takes to finish the trip.
-            purchase = min(tank_gallons, remaining_miles / mpg) - fuel
-            purchase = max(purchase, 0.0)
-            target = min(window, key=lambda j: (nodes[j].price, -nodes[j].mile_marker))
-
-        if purchase > EPSILON:
-            purchases.append(FuelPurchase(node=node, gallons=purchase, cost=purchase * node.price))
-            fuel += purchase
-
-        leg_miles = nodes[target].mile_marker - node.mile_marker
-        if leg_miles > fuel * mpg + EPSILON:
-            # Not enough fuel for the cheapest option - stop at the furthest
-            # station we can actually reach instead.
-            reachable = [j for j in window if nodes[j].mile_marker - node.mile_marker <= fuel * mpg]
-            if not reachable:
-                raise InfeasibleRouteError(
-                    "Ran out of range before the next reachable station.",
-                    detail={"reason": "range_gap", "from_mile": round(node.mile_marker, 1)},
-                )
-            target = max(reachable, key=lambda j: nodes[j].mile_marker)
-            leg_miles = nodes[target].mile_marker - node.mile_marker
-
-        fuel -= leg_miles / mpg
-        index = target
-
-    total_gallons = sum(p.gallons for p in purchases)
-    total_cost = sum(p.cost for p in purchases)
     return FuelPlan(
         purchases=purchases,
-        total_gallons=total_gallons,
-        total_cost=total_cost,
+        total_gallons=sum(p.gallons for p in purchases),
+        total_cost=sum(p.cost for p in purchases),
         tank_gallons=tank_gallons,
-        fuel_remaining_gallons=max(fuel, 0.0),
+        fuel_remaining_gallons=max(final_level * RESOLUTION_MILES - remaining, 0.0) / mpg,
+        objective=objective,
     )
