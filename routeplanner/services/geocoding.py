@@ -175,7 +175,12 @@ def geocode(raw: str) -> Place:
 
     place: Place | None = None
     errors: list[str] = []
-    for geocoder in (_ors_geocode, _nominatim_geocode):
+    calls = 0  # every HTTP request sent, so the count reported to clients is exact
+    geocoders = [_nominatim_geocode]
+    if _config("ORS_API_KEY"):
+        geocoders.insert(0, _ors_geocode)
+    for geocoder in geocoders:
+        calls += 1
         try:
             place = geocoder(query)
         except OutsideUnitedStatesError:
@@ -184,6 +189,7 @@ def geocode(raw: str) -> Place:
             errors.append(f"{geocoder.__name__}: {exc}")
             continue
         if place:
+            place.api_calls = calls
             break
 
     if place is None:

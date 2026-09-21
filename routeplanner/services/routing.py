@@ -1,8 +1,10 @@
 """Routing providers.
 
 One HTTP call per planned route. OpenRouteService is used when an API key is
-configured (it is noticeably faster); the keyless public OSRM server is the
-fallback so the project runs for anyone who clones it with no signup.
+configured; the keyless public OSRM server is the fallback, so the project runs
+for anyone who clones it with no signup. A provider is retried once only on a
+network error or a 5xx - never on a 4xx, which is an answer rather than an
+outage.
 """
 
 from __future__ import annotations
@@ -22,6 +24,14 @@ logger = logging.getLogger(__name__)
 class RoutingError(RuntimeError):
     """No routing provider could return a route."""
 
+    def __init__(self, message: str, *, api_calls: int = 0):
+        super().__init__(message)
+        self.api_calls = api_calls
+
+
+class NoRouteError(RoutingError):
+    """The router answered: there is no road between these points (e.g. islands)."""
+
 
 @dataclass
 class RouteResult:
@@ -35,6 +45,9 @@ class RouteResult:
 
 class RouteProvider(ABC):
     name: str = "provider"
+
+    def __init__(self):
+        self.calls = 0  # HTTP requests actually sent, retries included
 
     @property
     def available(self) -> bool:
@@ -50,24 +63,38 @@ class RouteProvider(ABC):
         return settings.ROUTE_PLANNER[key]
 
     def _request(self, method: str, url: str, **kwargs) -> requests.Response:
-        """One retry, then give up so the next provider gets a turn."""
+        """Send the request, retrying once only on a network error or a 5xx.
+
+        A 4xx is an answer, not an outage - retrying it would only spend a call -
+        so it is returned for the provider to interpret.
+        """
         timeout = self._config("HTTP_TIMEOUT_SECONDS")
         headers = kwargs.pop("headers", {})
         headers.setdefault("User-Agent", self._config("USER_AGENT"))
         last_error: Exception | None = None
         for attempt in (1, 2):
+            self.calls += 1
             try:
                 response = requests.request(
                     method, url, timeout=timeout, headers=headers, **kwargs
                 )
-                if response.status_code >= 500:
-                    raise requests.HTTPError(f"{response.status_code} from {self.name}")
-                response.raise_for_status()
-                return response
-            except Exception as exc:  # noqa: BLE001 - deliberately broad, we fall through
+            except requests.RequestException as exc:
                 last_error = exc
                 logger.warning("%s attempt %s failed: %s", self.name, attempt, exc)
+                continue
+            if response.status_code >= 500:
+                last_error = requests.HTTPError(f"{response.status_code} from {self.name}")
+                logger.warning("%s attempt %s failed: %s", self.name, attempt, last_error)
+                continue
+            return response
         raise RoutingError(f"{self.name} unavailable: {last_error}")
+
+    @staticmethod
+    def _json(response: requests.Response) -> dict:
+        try:
+            return response.json()
+        except ValueError:
+            return {}
 
 
 class ORSProvider(RouteProvider):
@@ -95,10 +122,17 @@ class ORSProvider(RouteProvider):
                 "Content-Type": "application/json",
             },
         )
-        payload = response.json()
+        payload = self._json(response)
+        if response.status_code >= 400:
+            error = payload.get("error") or {}
+            message = error.get("message", f"HTTP {response.status_code}")
+            # 2009: no route between the points; 2010: a point is nowhere near a road.
+            if error.get("code") in (2009, 2010):
+                raise NoRouteError(f"OpenRouteService: {message}")
+            raise RoutingError(f"OpenRouteService: {message}")
         routes = payload.get("routes") or []
         if not routes:
-            raise RoutingError("OpenRouteService returned no route")
+            raise NoRouteError("OpenRouteService returned no route")
         route = routes[0]
         summary = route.get("summary") or {}
         # ORS encodes geometry as a precision-5 polyline.
@@ -129,9 +163,12 @@ class OSRMProvider(RouteProvider):
                 "alternatives": "false",
             },
         )
-        payload = response.json()
-        if payload.get("code") != "Ok" or not payload.get("routes"):
-            raise RoutingError(f"OSRM returned {payload.get('code', 'no route')}")
+        payload = self._json(response)
+        code = payload.get("code")
+        if code in ("NoRoute", "NoSegment"):
+            raise NoRouteError(f"OSRM: {payload.get('message', code)}")
+        if response.status_code >= 400 or code != "Ok" or not payload.get("routes"):
+            raise RoutingError(f"OSRM returned {code or f'HTTP {response.status_code}'}")
         route = payload["routes"][0]
         return RouteResult(
             points=decode_polyline(route["geometry"], precision=6),
@@ -146,18 +183,31 @@ def get_providers() -> list[RouteProvider]:
 
 
 def fetch_route(start: tuple[float, float], finish: tuple[float, float]) -> RouteResult:
-    """Fetch a route, trying each available provider in order."""
+    """Fetch a route, trying each available provider in order.
+
+    ``api_calls`` on the result (or the error) counts every HTTP request sent,
+    across providers and retries, so the number reported to clients is exact.
+    """
     errors: list[str] = []
-    for provider in get_providers():
+    no_route_everywhere = True
+    providers = get_providers()
+    for provider in providers:
         try:
             result = provider.fetch(start, finish)
         except (RoutingError, ValueError, KeyError) as exc:
-            errors.append(f"{provider.name}: {exc}")
+            errors.append(str(exc))
+            no_route_everywhere &= isinstance(exc, NoRouteError)
             continue
         if len(result.points) < 2:
             errors.append(f"{provider.name}: route geometry too short")
+            no_route_everywhere = False
             continue
+        result.api_calls = sum(p.calls for p in providers)
         if errors:
-            result.warnings.append("Primary routing provider failed; used " + result.provider)
+            result.warnings.append(f"Primary routing provider failed; used {result.provider}")
         return result
-    raise RoutingError("; ".join(errors) or "no routing provider configured")
+
+    calls = sum(p.calls for p in providers)
+    if errors and no_route_everywhere:
+        raise NoRouteError("; ".join(errors), api_calls=calls)
+    raise RoutingError("; ".join(errors) or "no routing provider configured", api_calls=calls)
