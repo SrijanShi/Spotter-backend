@@ -1,11 +1,14 @@
 # Fuel-Optimal Route API
 
+[![tests](https://github.com/SrijanShi/Spotter-backend/actions/workflows/tests.yml/badge.svg)](https://github.com/SrijanShi/Spotter-backend/actions/workflows/tests.yml)
+
 A Django REST API that plans a driving route between two US locations and works out the
 cheapest way to fuel it — for a vehicle with a **500-mile range** doing **10 miles per gallon**,
 using the supplied OPIS truck stop price file.
 
-Give it a start and a finish; it returns the route, a map of it, the fuel stops to make in order,
-how many gallons to buy at each, and what the trip costs in fuel.
+Give it a start and a finish; it returns the route, a link to a map of it, the fuel stops to make
+in order, how many gallons to buy at each, and what the trip costs in fuel — using **one** call to
+the external routing API.
 
 ```
 GET /api/v1/route/?start=Dallas, TX&finish=New York, NY
@@ -13,21 +16,25 @@ GET /api/v1/route/?start=Dallas, TX&finish=New York, NY
 
 ```jsonc
 {
-  "route":  { "distance_miles": 1548.8, "duration_hours": 28.28, "provider": "osrm",
-              "geometry": { "type": "LineString", "coordinates": [[-96.79, 32.77], …] } },
+  "map_url": "http://localhost:8000/map/?start=Dallas%2C+TX&finish=New+York%2C+NY",
+  "route":  { "distance_miles": 1551.8, "duration_hours": 28.46, "provider": "osrm",
+              "geometry": { "type": "LineString", "coordinates": [[-96.77, 32.79], …] } },
   "fuel_stops": [
     { "sequence": 1, "name": "One9 #1248", "city": "Wilmer", "state": "TX",
-      "price_per_gallon": 2.756, "mile_marker": 0.0, "gallons": 50.7, "cost": 139.62 },
+      "price_per_gallon": 2.756, "mile_marker": 0.0, "gallons": 50.44, "cost": 139.0 },
     …
   ],
-  "totals": { "stops": 8, "gallons": 154.88, "fuel_cost": 438.19,
-              "cost_at_national_average": 528.63, "savings_vs_national_average": 90.44 },
-  "meta":   { "external_api_calls": 1, "cached": false, "compute_ms": 1484.4,
-              "routing_api_ms": 1345.7, "stations_considered": 388 }
+  "totals": { "stops": 8, "gallons": 155.18, "fuel_cost": 439.06,
+              "cost_at_national_average": 529.62, "savings_vs_national_average": 90.57 },
+  "meta":   { "external_api_calls": 1, "cached": false, "compute_ms": 1497.3,
+              "routing_api_ms": 1364.9, "stations_considered": 388 }
 }
 ```
 
-There is also a map page at **`/map/`** that renders the same response with Leaflet.
+**The map.** Every response carries `map_url` — open it and the route is drawn with numbered fuel
+stops, prices and totals (Leaflet + OpenStreetMap, rendered from this same response). The route is
+also in the JSON as a GeoJSON `LineString`, and every stop has coordinates, for clients that draw
+their own.
 
 ---
 
@@ -48,9 +55,9 @@ Then open <http://localhost:8000/map/> or:
 curl "http://localhost:8000/api/v1/route/?start=Dallas,%20TX&finish=New%20York,%20NY" | jq .totals
 ```
 
-No API key is needed — the project falls back to the keyless public OSRM server. If you have a
-free [OpenRouteService](https://openrouteservice.org/dev/#/signup) key, put it in `.env`
-(`cp .env.example .env`) and it will be used instead; it is faster.
+No API key is needed — the project uses the keyless public OSRM server. If you have a free
+[OpenRouteService](https://openrouteservice.org/dev/#/signup) key, put it in `.env`
+(`cp .env.example .env`) and it becomes the primary router, with OSRM as the fallback.
 
 With Docker:
 
@@ -69,9 +76,9 @@ Other entry points: `/api/docs/` (Swagger UI), `/api/v1/health/` (dataset summar
   start, finish
         │
         ▼
- ┌─────────────────┐   0–2 calls   place name → coordinates
- │   geocoding     │───────────────► (skipped for "lat,lon" input; cached in the DB forever)
- └─────────────────┘
+ ┌─────────────────┐   0 calls     "City, ST" → offline Census place file (33k US places)
+ │   geocoding     │───────────────► "lat,lon" → used as-is
+ └─────────────────┘                 anything else → online geocoder, then cached in the DB
         │
         ▼
  ┌─────────────────┐   1 call      OSRM / OpenRouteService
@@ -95,15 +102,17 @@ The brief asks for one call to the free map/routing API, and no more than three.
 
 | Step | Calls | Notes |
 |---|---|---|
-| Geocode `start` | 0–1 | 0 when you pass `lat,lon`, or when the name has been seen before |
-| Geocode `finish` | 0–1 | same |
-| Route | 1 | one request, full geometry |
+| Geocode `start` | 0 | `"Dallas, TX"`, `"Dallas, Texas"` or `"32.77,-96.79"` resolve offline |
+| Geocode `finish` | 0 | same |
+| Route | **1** | one request, full geometry |
 | Everything else | 0 | corridor matching and optimisation are pure in-memory work |
 
-**Worst case 3. Typical 1. Repeat request 0** — a planned route is cached for 24 hours under its
-rounded coordinates, and resolved place names are cached in the database permanently. The response
-reports the actual count in `meta.external_api_calls`, so you can check rather than take my word
-for it.
+**A normal request makes exactly one external call** — the route. `City, ST` inputs are answered
+from the same US Census gazetteer that geocodes the truck stops, shipped as a 440 KB file. Only
+input it cannot parse (a street address, a landmark) goes to an online geocoder, and that answer is
+cached in the database permanently, so the worst case is 3 and only ever on first sight. A repeat
+request makes **zero** calls: planned routes are cached for 24 hours. The response reports the
+actual count in `meta.external_api_calls`, so you can check rather than take my word for it.
 
 ### Finding the stations near the route
 
@@ -170,8 +179,12 @@ endpoints must be in the USA, so they are not loaded.
 mostly rebrands (`PILOT TRAVEL CENTER #1243` / `PILOT #1243`). One row per ID is kept, at the lower
 price. 8,151 rows in, 6,614 stations out.
 
-**"Within the USA" is enforced.** Place names are geocoded worldwide and then filtered to US
-results, so `Toronto, ON` is rejected instead of quietly becoming Toronto, Ohio. Raw coordinates
+**Start and finish resolve to the city centroid.** `Dallas, TX` means the Census internal point of
+Dallas, which is plenty for routing a truck across the country. Pass `lat,lon` for an exact spot.
+
+**"Within the USA" is enforced.** Canadian provinces are rejected offline (`Toronto, ON` → 400, no
+API call), and names sent to the online geocoder are searched worldwide and then filtered to US
+results, so nothing foreign quietly becomes a US namesake. Raw coordinates
 are tested against a US outline (Natural Earth 1:50m), with a fallback that accepts any point
 within 25 miles of a US truck stop in the dataset — without it, border and coastal cities like
 El Paso and Manhattan fall marginally outside a 50m coastline.
@@ -183,31 +196,30 @@ go, buying the minimum at each of several stops really is cheapest, so that is w
 
 ## Performance
 
-Measured on this machine, Dallas → New York (1,549 miles, 20,871 route points):
+Measured on this machine, Dallas → New York (1,552 miles, 21,016 route points), no API key:
 
 | | |
 |---|---|
 | Total, cold | **1.5 s** |
-| ↳ waiting on the free routing server | 1.35 s |
-| ↳ **this API's own work** | **~139 ms** |
-| Repeat request (cached plan) | **5 ms** compute, 56 ms wall |
+| ↳ waiting on the free routing server | 1.36 s |
+| ↳ **this API's own work** | **~130 ms** |
+| Repeat request (cached plan) | **0.3 ms** compute, 3 ms wall |
+| Geocoding `Dallas, TX` and `New York, NY` | 0 ms network — offline |
 | Corridor match + distance accumulation | 63 ms + 14 ms |
 | Optimiser (388 candidates) | 0.3 ms |
 | Thinning the geometry for the response | 58 ms |
 | Station index build (once per process, at start-up) | 76 ms |
-| Response size | 25 KB (geometry thinned from 20,871 points to 1,072 with Douglas-Peucker) |
+| Response size | 25 KB (geometry thinned from 21,016 points to 1,066 with Douglas-Peucker) |
 
-The work that is actually ours is the 139 ms. What dominates the cold path is the public OSRM demo
-server, which is a shared free box; an OpenRouteService key or a self-hosted OSRM
-(`OSRM_BASE_URL`) cuts it substantially. Requests are made with `polyline6` geometry, which is
-about five times smaller over the wire than GeoJSON.
-
----
+The work that is actually ours is the ~130 ms. The cold path is dominated by the one routing call to
+a free public server; OpenRouteService with a key performs about the same from here, and a
+self-hosted OSRM (`OSRM_BASE_URL`) would remove most of it. Requests ask for `polyline6` geometry,
+which is about five times smaller over the wire than GeoJSON.
 
 ## Tests
 
 ```bash
-python manage.py test        # 58 tests, ~0.2 s, no network access
+python manage.py test        # 61 tests, ~0.3 s, no network access
 ```
 
 The routing provider is mocked and locations are passed as coordinates, so the suite never touches
@@ -215,6 +227,12 @@ the internet. It covers the optimiser against hand-computed answers and against 
 corridor index, the gazetteer name normalisation (`Oklahoma City city`, `Indianapolis city
 (balance)`, `Mc Calla`), the US service-area rules, geocode caching, and the API contract —
 including the 400, 422, 502 and 503 paths and the cache actually preventing a second routing call.
+They run on every push in GitHub Actions (badge at the top), and the suite ignores any ORS key in
+your `.env`, so it behaves the same everywhere.
+
+`postman_collection.json` carries its own assertions — 32 of them, checking one external call per
+plan, cache hits, `gallons = miles ÷ mpg`, no gap longer than the range, and the error codes. Run it
+in Postman or with `npx newman run postman_collection.json`.
 
 ---
 
@@ -226,7 +244,8 @@ routeplanner/
   models.py                 FuelStation, GeocodeCache
   services/
     routing.py              RouteProvider ABC → OpenRouteService, OSRM; polyline decoding
-    geocoding.py            place name → coordinates, US-filtered, DB-cached
+    places.py               "City, ST" → coordinates offline, from the Census place file
+    geocoding.py            everything else → online geocoder, US-filtered, DB-cached
     corridor.py             grid index; stations near a route, with mile markers
     optimizer.py            the gas station algorithm
     planner.py              orchestration, caching, response building
@@ -242,6 +261,7 @@ routeplanner/
 data/
   fuel-prices-for-be-assessment.csv   supplied
   station_coordinates.csv             geocoding output (committed)
+  us_places.csv.gz                    33k US places for offline "City, ST" lookup (committed)
   us_boundary.json                    US outline, Natural Earth 1:50m (public domain)
 ```
 
