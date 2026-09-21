@@ -60,13 +60,33 @@ class GeocodeTests(TestCase):
         self.assertEqual(place.api_calls, 0)
         self.assertAlmostEqual(place.latitude, 32.7767)
 
-    def test_place_name_is_geocoded_once_then_cached(self):
+    def test_city_state_input_is_answered_offline(self):
+        with mock.patch("routeplanner.services.geocoding.requests.get") as get:
+            for query in ("Dallas, TX", "dallas, texas", "Dallas, TX 75201, USA"):
+                place = geocode(query)
+                self.assertEqual(place.api_calls, 0, query)
+                self.assertAlmostEqual(place.latitude, 32.79, delta=0.1)
+                self.assertAlmostEqual(place.longitude, -96.77, delta=0.1)
+        get.assert_not_called()
+
+    def test_offline_lookup_handles_census_naming(self):
+        # "Oklahoma City city" and "St. Louis city" in the gazetteer.
+        for query in ("Oklahoma City, OK", "St. Louis, MO", "Saint Louis, MO", "New York, NY"):
+            self.assertEqual(geocode(query).api_calls, 0, query)
+
+    def test_canadian_province_is_rejected_without_a_call(self):
+        with mock.patch("routeplanner.services.geocoding.requests.get") as get:
+            with self.assertRaises(OutsideUnitedStatesError):
+                geocode("Toronto, ON")
+        get.assert_not_called()
+
+    def test_other_inputs_are_geocoded_online_once_then_cached(self):
         with mock.patch(
             "routeplanner.services.geocoding.requests.get",
             return_value=nominatim_response(DALLAS),
         ) as get:
-            first = geocode("Dallas, TX")
-            second = geocode("dallas, tx")  # case-insensitive cache hit
+            first = geocode("Dallas Love Field")
+            second = geocode("dallas love field")  # case-insensitive cache hit
         self.assertEqual(get.call_count, 1)
         self.assertEqual(first.api_calls, 1)
         self.assertEqual(second.api_calls, 0)
@@ -80,7 +100,7 @@ class GeocodeTests(TestCase):
             return_value=nominatim_response(TORONTO),
         ):
             with self.assertRaises(OutsideUnitedStatesError):
-                geocode("Toronto, ON")
+                geocode("CN Tower")
         self.assertEqual(GeocodeCache.objects.count(), 0)
 
     def test_coordinates_outside_the_usa_are_rejected(self):

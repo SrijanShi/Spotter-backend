@@ -169,7 +169,8 @@ ROUTE_PLANNER = {
     # Seconds to cache a fully planned route.
     "PLAN_CACHE_SECONDS": 60 * 60 * 24,
     "HTTP_TIMEOUT_SECONDS": float(os.environ.get("ROUTING_TIMEOUT", "20")),
-    "ORS_API_KEY": os.environ.get("ORS_API_KEY", ""),
+    # Blank under test so the suite never depends on a developer's local .env.
+    "ORS_API_KEY": "" if TESTING else os.environ.get("ORS_API_KEY", ""),
     "ORS_PROFILE": os.environ.get("ORS_PROFILE", "driving-car"),
     "OSRM_BASE_URL": os.environ.get("OSRM_BASE_URL", "https://router.project-osrm.org"),
     "USER_AGENT": os.environ.get(

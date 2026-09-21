@@ -6,14 +6,19 @@ never geocodes a station at request time and a fresh clone needs no network.
     python manage.py geocode_stations
 
 Two sources, in order:
-  1. US Census place gazetteer - free, offline, instant, covers ~94% of rows.
+  1. US Census place gazetteer - free, offline, instant, covers ~95% of rows.
   2. OpenStreetMap Nominatim - only for what is left (a few hundred small towns),
      rate limited to one request per second per their usage policy.
+
+The same run writes ``data/us_places.csv.gz``: every US place in the gazetteer,
+which lets the API resolve "City, ST" start/finish inputs with no API call.
 """
 
 from __future__ import annotations
 
 import csv
+import gzip
+import io
 import time
 import urllib.parse
 import urllib.request
@@ -40,6 +45,11 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--csv", default=str(settings.FUEL_PRICES_CSV))
         parser.add_argument("--out", default=str(settings.STATION_COORDINATES_CSV))
+        parser.add_argument(
+            "--places-out",
+            default=str(settings.DATA_DIR / "us_places.csv.gz"),
+            help="Offline US place lookup used to geocode 'City, ST' API input.",
+        )
         parser.add_argument(
             "--gazetteer",
             default=str(settings.DATA_DIR / "census_gazetteer_places.txt"),
@@ -86,6 +96,7 @@ class Command(BaseCommand):
         gazetteer_path = download_gazetteer(Path(options["gazetteer"]))
         places = load_gazetteer(gazetteer_path)
         self.stdout.write(f"Census gazetteer loaded: {len(places)} name/state keys")
+        self._write_places(Path(options["places_out"]), places)
 
         census_hits = 0
         for key in wanted:
@@ -167,6 +178,16 @@ class Command(BaseCommand):
         if not payload:
             return None
         return float(payload[0]["lat"]), float(payload[0]["lon"])
+
+    def _write_places(self, path: Path, places: dict[tuple[str, str], tuple[float, float]]) -> None:
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(["name", "state", "latitude", "longitude"])
+        for (name, state), (latitude, longitude) in sorted(places.items()):
+            writer.writerow([name, state, f"{latitude:.5f}", f"{longitude:.5f}"])
+        # mtime=0 keeps the file byte-identical between runs, so git sees no change.
+        path.write_bytes(gzip.compress(buffer.getvalue().encode(), compresslevel=9, mtime=0))
+        self.stdout.write(f"Wrote {len(places)} US places to {path}")
 
     def _write(self, path: Path, resolved: dict[tuple[str, str], tuple[float, float, str]]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -1,7 +1,9 @@
 """Turn user-supplied locations into coordinates.
 
-Costs zero API calls when the caller passes ``lat,lon`` or when the place name
-has been resolved before (results are cached in the database permanently).
+Costs zero API calls for ``lat,lon`` input, for "City, ST" input (answered from
+the offline Census place file - see ``places.py``), and for any place name that
+has been resolved before (cached in the database permanently). Only addresses
+and landmarks the offline data cannot answer reach an online geocoder.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import requests
 from django.conf import settings
 
 from ..models import GeocodeCache
+from . import places
 from .service_area import in_service_area
 
 logger = logging.getLogger(__name__)
@@ -140,6 +143,24 @@ def geocode(raw: str) -> Place:
                 f"'{query}' is outside the United States. Both locations must be within the USA."
             )
         return Place(query=query, latitude=latitude, longitude=longitude)
+
+    parts = places.split_city_state(query)
+    if parts and places.is_canadian_region(parts[1]):
+        raise OutsideUnitedStatesError(
+            f"'{query}' is in Canada. Both locations must be within the USA."
+        )
+
+    offline = places.lookup(query)
+    if offline:
+        latitude, longitude, label = offline
+        return Place(
+            query=query,
+            latitude=latitude,
+            longitude=longitude,
+            display_name=label,
+            provider="census-gazetteer (offline)",
+            api_calls=0,
+        )
 
     cached = GeocodeCache.objects.filter(query__iexact=query).first()
     if cached:
