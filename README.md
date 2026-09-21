@@ -43,7 +43,7 @@ GET /api/v1/route/?start=Dallas, TX&finish=New York, NY
 `totals` is the exact sum of the stops as listed, to the cent.
 
 **The map.** Every response carries `map_url` — open it and the route is drawn with numbered fuel
-stops, prices and totals (Leaflet on OpenStreetMap tiles, rendered from this same response). The route is
+stops, prices and totals (Leaflet on Esri street tiles, rendered from this same response). The route is
 also in the JSON as a GeoJSON `LineString`, and every stop has coordinates, for clients that draw
 their own.
 
@@ -324,4 +324,7 @@ data/
 - Geocoding: [US Census Gazetteer](https://www.census.gov/geographies/reference-files/time-series/geo/gazetteer-files.html)
   and [Nominatim](https://nominatim.org/) (© OpenStreetMap contributors, ODbL).
 - US outline: [Natural Earth](https://www.naturalearthdata.com/) 1:50m, public domain.
-- Map tiles: [OpenStreetMap](https://www.openstreetmap.org/copyright) standard tiles, no key required.
+- Map: [Leaflet](https://leafletjs.com/) 1.9.4 (BSD-2, served from the app's static files) on Esri World
+  Street Map tiles, which need no key and no Referer. OpenStreetMap's own tile servers were rejected:
+  they answer browsers that send no Referer — Brave, strict privacy settings — with an "Access
+  blocked" image.

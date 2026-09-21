@@ -4,8 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Fuel-Optimal Route Planner</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<link rel="stylesheet" href="{% static 'routeplanner/leaflet/leaflet.css' %}">
 <style>
   :root {
     --bg: #0f1419;
@@ -86,7 +85,7 @@
 <body>
 <div id="sidebar">
   <h1>Fuel-Optimal Route Planner</h1>
-  <div class="sub">Cheapest way to fuel a 500-mile-range, 10&nbsp;mpg truck across the USA.</div>
+  <div class="sub">Cost-effective fuel stops for a 500-mile-range, 10&nbsp;mpg truck across the USA.</div>
 
   <label for="start">Start</label>
   <input id="start" value="{{ start }}" placeholder="Dallas, TX">
@@ -110,15 +109,20 @@
 </div>
 <div id="map"></div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="{% static 'routeplanner/leaflet/leaflet.js' %}"></script>
 <script>
 const map = L.map('map', { zoomControl: true }).setView([39.5, -98.35], 4);
-// OpenStreetMap's standard tiles: free, no API key, attribution required.
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-  maxZoom: 19
-}).addTo(map);
+// Esri World Street Map: free and keyless, and it does not depend on the
+// browser sending a Referer. OpenStreetMap's own tile servers do: they answer
+// requests without one with an "Access blocked" image, and Brave and strict
+// privacy settings strip it. Sending no referrer at all makes every browser
+// behave like the strictest one, so what is tested is what everyone sees.
+const tiles = L.tileLayer(
+  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+    attribution: 'Tiles &copy; Esri &mdash; Esri, HERE, Garmin, USGS, NGA, EPA, USDA, NPS',
+    maxZoom: 19,
+    referrerPolicy: 'no-referrer'
+  }).addTo(map);
 
 let layer = L.layerGroup().addTo(map);
 const $ = (id) => document.getElementById(id);
