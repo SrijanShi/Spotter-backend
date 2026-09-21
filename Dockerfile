@@ -20,4 +20,6 @@ RUN python manage.py collectstatic --noinput
 RUN chmod +x docker-entrypoint.sh
 EXPOSE 8000
 ENTRYPOINT ["./docker-entrypoint.sh"]
-CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "60"]
+# --preload: load and warm the app once, then fork the workers, so none of them
+# pays for importing Django or loading the station data on its first request.
+CMD ["gunicorn", "config.wsgi:application", "--preload", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "60"]
